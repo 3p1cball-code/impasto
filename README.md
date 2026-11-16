@@ -13,7 +13,13 @@ The nozzle follows the real surface while it prints the decoration – over the 
 a curved housing, across a tapered front.
 
 The example part in the screenshots is a compostable eyewear front from
-[augenrahmen.de](https://augenrahmen.de) (100 % PHA, printed in Berlin).
+[augenrahmen.de](https://augenrahmen.de) (100 % PHA, printed in Berlin) – see
+[Made with augenrahmen](#made-with-augenrahmen).
+
+> **Self-hosted, no public instance.** This repository is the complete app. There is no hosted
+> service to try – start it locally (see [Quick start](#quick-start)) or on a machine in your own
+> network. The printer connection (FTPS/MQTT, AMS) is designed for a Bambu printer in LAN mode and
+> needs to reach it directly.
 
 <p align="center">
   <img src="docs/print-preview-3d.png" alt="3D preview of the generated toolpath with the print head" width="100%">
@@ -198,6 +204,19 @@ The `X-NPG-Lang: de|en` header selects the language of backend messages.
 collision check, filament changes (rendered against a real Bambu tool-change block), the AMS
 mapping and the HTTP API (including send and variants). The UI has no test runner; a JS syntax
 check and manual browser runs are used instead.
+
+## Made with augenrahmen
+
+The glasses front in the screenshots is not a demo model. It is the front of a compostable eyewear
+frame from **augenrahmen**: designed and 3D-printed in Berlin from 100 % PHA, a biopolymer produced
+by microorganisms that breaks down completely in soil and water. Every frame is made to order –
+size, pattern and colour per customer.
+
+The non-planar wave is exactly the kind of decoration this tool adds to that part: printed onto the
+real surface, not painted on.
+
+- Website: <https://augenrahmen.de>
+- Instagram: <https://instagram.com/augenrahmen>
 
 ## License
 

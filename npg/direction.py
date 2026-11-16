@@ -122,30 +122,3 @@ def _dir(rise: float, h: float = EPS) -> bool | None:
     if rise > t:
         return False
     return None
-
-
-def order(sections: list[tuple[int, int, bool | None]], P: np.ndarray,
-          start: tuple[float, float]) -> list[tuple[int, int, bool]]:
-    """Nearest-section ordering; level sections may flip to shorten the travel."""
-    rem = list(range(len(sections)))
-    out: list[tuple[int, int, bool]] = []
-    cx, cy = float(start[0]), float(start[1])
-    while rem:
-        best = None
-        for k in rem:
-            i0, i1, rev = sections[k]
-            if rev is None:
-                d0 = math.hypot(P[i0, 0] - cx, P[i0, 1] - cy)
-                d1 = math.hypot(P[i1, 0] - cx, P[i1, 1] - cy)
-                cand = (d0 if d0 <= d1 else d1, k, d1 < d0)
-            else:
-                j = i1 if rev else i0
-                cand = (math.hypot(P[j, 0] - cx, P[j, 1] - cy), k, rev)
-            if best is None or cand[0] < best[0]:
-                best = cand
-        _, k, rev = best
-        i0, i1, _ = sections[k]
-        out.append((i0, i1, bool(rev)))
-        cx, cy = float(P[i0 if rev else i1, 0]), float(P[i0 if rev else i1, 1])
-        rem.remove(k)
-    return out

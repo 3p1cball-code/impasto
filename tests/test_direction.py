@@ -79,15 +79,6 @@ def test_short_strokes_stay_whole():
     assert secs == [(0, 2, True)]
 
 
-def test_order_starts_at_the_near_end():
-    x = np.linspace(0, 100, 401)
-    z = 5.0 + 1.0 - np.abs(x - 50) / 50.0
-    P = _line(401)
-    secs = direction.order(_plan(z), P, (100.0, 0.0))
-    assert secs[0] == (200, 400, True)                  # right flank first, from the valley up
-    assert secs[0][2] is True and secs[1][2] is False
-
-
 def test_sections_cover_the_stroke_without_gaps():
     x = np.linspace(0, 100, 401)
     z = 5.0 + np.sin(x / 100 * 6 * np.pi)

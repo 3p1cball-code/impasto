@@ -15,7 +15,8 @@ const PARAM_UI = [
   ["line_width", "param.lineWidth", 0.2, 1.0, 0.01, "mm", 1, true, "tip.param.line_width"],
   ["flow", "param.flow", 0.3, 2.5, 0.01, "%", 100, true, "tip.param.flow"],
   ["speed", "param.speed", 2, 60, 0.5, "mm/s", 1, true, "tip.param.speed"],
-  ["dir_min_rise", "param.dirMinRise", 0, 1, 0.01, "mm", 1, true, "tip.param.dir_min_rise"],
+  ["dir_min_rise", "param.dirMinRise", 0, 5, 0.01, "mm", 1, true, "tip.param.dir_min_rise"],
+  ["dir_travel_weight", "param.dirTravelWeight", 0, 40, 0.5, "×", 1, true, "tip.param.dir_travel_weight"],
   ["hop", "param.hop", 0.2, 5, 0.1, "mm", 1, false, "tip.param.hop"],
   ["travel_speed", "param.travel", 20, 300, 5, "mm/s", 1, false, ""],
   ["retract", "param.retract", -1, 3, 0.05, "mm", 1, false, "tip.param.retract"],
@@ -230,13 +231,17 @@ function renderGenStats() {
   const dtot = di ? di.up_mm + di.down_mm : 0;
   const dirInfo = di ? `<span title="${t("stats.cutsTip", { mm: di.before_mm.toFixed(1), max: di.down_max ? t("stats.cutsMax", { d: di.down_max.toFixed(2) }) : "" })}">${t("stats.uphill")}
     <b>${(dtot > 0 ? (100 * di.up_mm) / dtot : 100).toFixed(1)} %</b> · <b>${di.cuts}</b> ${t("stats.cuts")}</span>` : "";
+  const trv = +((di && di.travel_mm) || 0);
+  const travelInfo = trv > 0
+    ? `<span title="${t("stats.travelTip")}">${t("stats.travel")} <b>${trv.toFixed(0)} mm</b></span>`
+    : "";
   const stk = +st.stacked_mm || 0;
   const stackInfo = stk > 0.5
     ? `<span title="${t("stats.stackedTip")}">${t("stats.stacked")} <b>${stk.toFixed(0)} mm</b></span>`
     : "";
   $("statsBar").innerHTML = `<span>NON-PLANAR</span><b>${fmtTime(st.time_s)}</b>
     <span>${t("stats.toolchanges")} <b>${st.toolchanges}</b></span><span>${t("stats.purge")} <b>${(st.purge_mm3 / 1000).toFixed(2)} cm³</b></span>
-    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${dirInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
+    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${travelInfo}${dirInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
     ${st.collisions == null ? "" : `<span style="color:${st.collisions ? "var(--err,#ff3b30)" : "var(--ok,#6c6)"}">${t("stats.collisions")} <b>${st.collisions}</b> · ${st.coll_ms} ms</span>`}`;
 }
 

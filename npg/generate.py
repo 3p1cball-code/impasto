@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 from scipy import ndimage
 
-from . import direction, surface, toolchange
+from . import direction, surface, toolchange, tour
 from .bambu import Job
 from .parse import Toolpaths
 from .surface import Grid
@@ -41,6 +41,7 @@ class Params:
     dir_min_rise: float = 0.10    # mm – a turn in the surface only cuts the stroke above this
     dir_end_len: float = 0.5      # mm – no cut closer than this to a stroke end
     dir_cap: int = 0              # max sections per stroke, 0 = unlimited
+    dir_travel_weight: float = 10.0 # ordering: 1 mm downhill counts like N mm of travel
     # old keys dir_min_len / dir_max_parts / dir_smooth are ignored on purpose:
     # their old defaults (1.5 / 6 / 0.8) hid real dips and left downhill lines.
 
@@ -213,7 +214,8 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     stats = {"length_mm": {}, "filament_mm": {}, "volume_mm3": {}, "strokes": {}, "toolchanges": 0,
              "purge_mm3": 0.0, "time_s": 0.0, "max_z": 0.0, "min_z": 1e9,
              "cuts": [], "dir_up_mm": 0.0, "dir_down_mm": 0.0, "dir_before_mm": 0.0,
-             "dir_down_max": 0.0, "stacked_mm": 0.0, "elements": len({i for (i, _) in groups})}
+             "dir_down_max": 0.0, "stacked_mm": 0.0, "elements": len({i for (i, _) in groups}),
+             "travel_plan_mm": 0.0, "down_plan_mm": 0.0}
 
     W.emit("; ===== NON-PLANAR LAYER (Non-Planar Gcoder) START =====")
     W.emit("; CHANGE_LAYER")
@@ -300,34 +302,74 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
         rl = retract_len[slot]
         rf = int(p.retract_speed * 60)
 
-        # ---- order strokes: greedy nearest neighbour with reversal / loop rotation ----
-        remaining = list(range(len(strokes)))
-        seq = []
-        cx, cy = (W.x or 0.0), (W.y or 0.0)
-        while remaining:
-            best = None
-            for k in remaining:
-                s = strokes[k]
-                if closed[k]:
-                    d = np.hypot(s[:, 0] - cx, s[:, 1] - cy)
-                    j = int(np.argmin(d))
-                    cand = (float(d[j]), k, "rot", j)
+        # ---- plan every section of this group, then order them so that the
+        #      travels stay short: every hop is a retract + prime (oozing), so a
+        #      section may also be printed the other way round when that saves
+        #      more travel than the downhill costs (see npg.tour)
+        plan_start = (W.x or 0.0), (W.y or 0.0)
+        items: list[dict] = []
+        for stroke_idx, s in enumerate(strokes):
+            dense = _resample(s, p.step)
+            zs = surface.sample_max(g.ZN, g, dense[:, 0], dense[:, 1])
+            ok = np.isfinite(zs)
+            # split at holes
+            pieces = []
+            start = None
+            for i, o in enumerate(ok):
+                if o and start is None:
+                    start = i
+                if (not o or i == len(ok) - 1) and start is not None:
+                    end = i + 1 if o else i
+                    if end - start >= 2:
+                        pieces.append((start, end))
+                    start = None
+            for (a, b) in pieces:
+                P = dense[a:b]
+                if _length(P) < p.min_len:
+                    continue
+                zb = zs[a:b] + off
+                ds = np.r_[0.0, np.hypot(*np.diff(P, axis=0).T)]
+                dz0 = np.diff(zb)
+                stats["dir_before_mm"] += float(ds[1:][dz0 < -1e-6].sum())
+                if p.stack:
+                    hn = surface.sample(HNP, g, P[:, 0], P[:, 1], mode="nearest")
+                    hn = np.where(np.isfinite(hn), hn, -np.inf)
                 else:
-                    d0 = math.hypot(s[0, 0] - cx, s[0, 1] - cy)
-                    d1 = math.hypot(s[-1, 0] - cx, s[-1, 1] - cy)
-                    cand = (d0, k, "fwd", 0) if d0 <= d1 else (d1, k, "rev", 0)
-                if best is None or cand[0] < best[0]:
-                    best = cand
-            _, k, mode, j = best
-            s = strokes[k]
-            if mode == "rev":
-                s = s[::-1]
-            elif mode == "rot" and j:
-                ring = s[:-1] if np.hypot(*(s[0] - s[-1])) < 1e-3 else s
-                s = np.vstack([ring[j:], ring[:j], ring[j:j + 1]])
-            seq.append(s)
-            remaining.remove(k)
-            cx, cy = s[-1]
+                    hn = np.full(len(P), -np.inf)
+                on_top = (hn + off) > (zb + 0.02)          # sits on material below
+                if on_top.any():
+                    stats["stacked_mm"] += float(ds[1:][on_top[1:]].sum())
+                # ---- uphill first: split the stroke where the surface turns ----
+                if p.dir_opt:
+                    secs = direction.plan(P, zb, min_rise=p.dir_min_rise, min_len=p.dir_end_len,
+                                          max_parts=p.dir_cap)
+                else:
+                    secs = [(0, len(P) - 1, False)]
+                for k, (i0, i1, rev) in enumerate(secs):
+                    if i1 - i0 < 1:
+                        continue
+                    ring = bool(closed[stroke_idx]) and i0 == 0 and i1 == len(P) - 1
+                    # downhill arc length of this section in both directions: a
+                    # level but wavy section costs nothing when it is flipped
+                    zi, di = zb[i0:i1 + 1], ds[i0:i1 + 1]
+                    dz = np.diff(zi)
+                    desc_f = float(di[1:][dz < -1e-6].sum())
+                    desc_b = float(di[1:][dz > 1e-6].sum())
+                    items.append({"P": P, "zb": zb, "ds": ds, "hn": hn,
+                                  "i0": i0, "i1": i1, "k": k, "n": len(secs),
+                                  "down_f": desc_f, "down_b": desc_b, "ring": ring,
+                                  "cut": (float(P[i0, 0]), float(P[i0, 1]), float(zb[i0]))})
+
+        plan_info = {"travel": 0.0, "downhill": 0.0, "cost": 0.0}
+        if items:
+            order, flips, plan_info = tour.plan(
+                [(it["P"][it["i0"]], it["P"][it["i1"]], it["down_b"] - it["down_f"])
+                 for it in items],
+                plan_start, weight=(p.dir_travel_weight if p.dir_opt else 0.0))
+        else:
+            order, flips = [], []
+        stats["travel_plan_mm"] += plan_info["travel"]
+        stats["down_plan_mm"] += plan_info["downhill"]
 
         def emit_path(P, z, ds, gap, note="", dirz=None):
             """Travel to P[0] and extrude along it."""
@@ -384,90 +426,67 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
             if p.stack:
                 _stamp(HNP, g, P, z, w * 0.4)
 
-        for s in seq:
-            dense = _resample(s, p.step)
-            zs = surface.sample_max(g.ZN, g, dense[:, 0], dense[:, 1])
-            ok = np.isfinite(zs)
-            # split at holes
-            pieces = []
-            start = None
-            for i, o in enumerate(ok):
-                if o and start is None:
-                    start = i
-                if (not o or i == len(ok) - 1) and start is not None:
-                    end = i + 1 if o else i
-                    if end - start >= 2:
-                        pieces.append((start, end))
-                    start = None
-            for (a, b) in pieces:
-                P = dense[a:b]
-                if _length(P) < p.min_len:
-                    continue
-                z = zs[a:b] + off
-                if p.stack:
-                    hn = surface.sample(HNP, g, P[:, 0], P[:, 1], mode="nearest")
-                    hn = np.where(np.isfinite(hn), hn, -np.inf)
-                    z = np.maximum(z, hn + off)   # lay it onto the element below
-                else:
-                    hn = np.full(len(P), -np.inf)
-                ds = np.r_[0.0, np.hypot(*np.diff(P, axis=0).T)]
-                dz0 = np.diff(z)
-                stats["dir_before_mm"] += float(ds[1:][dz0 < -1e-6].sum())
+        # planned entry of every section: used to roll a closed ring to the
+        # cheapest start (entering where the previous line ended, leaving
+        # towards the next one)
+        entries = [items[j]["P"][items[j]["i0"]] if not f else items[j]["P"][items[j]["i1"]]
+                   for j, f in zip(order, flips)]
 
-                # ---- how much of this element sits on material below ----
-                P0, z0, hn0, ds0 = P, z, hn, ds
-                on_top = z0 > (zs[a:b] + off + 0.02)     # sits on an element printed before
-                if on_top.any():
-                    stats["stacked_mm"] += float(ds0[1:][on_top[1:]].sum())
-                for (ra, rb) in [(0, len(P0))]:
-                    P, z, hn, ds = P0[ra:rb], z0[ra:rb], hn0[ra:rb], ds0[ra:rb]
+        for pos, (j, flip) in enumerate(zip(order, flips)):
+            it = items[j]
+            P, ds, zb = it["P"], it["ds"], it["zb"]
+            sl = slice(it["i0"], it["i1"] + 1)
+            if flip:
+                Pp, dsp, hp = P[sl][::-1], ds[sl][::-1], it["hn"][sl][::-1]
+            else:
+                Pp, dsp, hp = P[sl], ds[sl], it["hn"][sl]
+            zp = zb[sl].copy()
+            if flip:
+                zp = zp[::-1]
+            if it["ring"] and len(Pp) > 3:
+                # rotate the ring: enter where the nozzle is, leave towards the next line
+                px_, py_ = (W.x if W.x is not None else Pp[0, 0]), (W.y if W.y is not None else Pp[0, 1])
+                nxt = entries[pos + 1] if pos + 1 < len(entries) else Pp[-1]
+                d0 = np.hypot(Pp[:, 0] - px_, Pp[:, 1] - py_) + np.hypot(Pp[:, 0] - nxt[0], Pp[:, 1] - nxt[1])
+                ri = int(np.argmin(d0))
+                if ri:
+                    ringp = Pp[:-1]
+                    Pp = np.vstack([ringp[ri:], ringp[:ri], ringp[ri:ri + 1]])
+                    dsp = np.r_[0.0, np.hypot(*np.diff(Pp, axis=0).T)]
+                    zp = np.r_[zp[:-1][ri:], zp[:-1][:ri], zp[ri:ri + 1]]
+                    hp = np.r_[hp[:-1][ri:], hp[:-1][:ri], hp[ri:ri + 1]]
+            if p.stack:
+                zp = np.maximum(zp, hp + off)     # lay it onto the element below
+            nk = min(3, max(1, len(zp) // 4))
+            rise, slen = float(zp[-nk:].mean() - zp[:nk].mean()), float(dsp.sum())
+            z_dir = zp.copy()                      # surface height for the uphill metric
+            if p.ramp > 0:
+                for i in range(1, len(zp)):
+                    zp[i] = max(zp[i], zp[i - 1] - p.ramp * dsp[i])
+                for i in range(len(zp) - 2, -1, -1):
+                    zp[i] = max(zp[i], zp[i + 1] - p.ramp * dsp[i + 1])
+            if p.gap_flow:
+                ha = surface.sample(HA, g, Pp[:, 0], Pp[:, 1])
+                ha = np.maximum(np.where(np.isfinite(ha), ha, -np.inf), hp)
+                gap = np.where(np.isfinite(ha), zp - ha, bead)
+                gap = np.clip(gap, 0.5 * bead, 2.0 * bead)
+            else:
+                gap = np.full(len(zp), bead)
 
-                    # ---- uphill first: split the stroke where the surface turns ----
-                    if p.dir_opt:
-                        secs = direction.order(
-                            direction.plan(P, z, min_rise=p.dir_min_rise, min_len=p.dir_end_len,
-                                           max_parts=p.dir_cap),
-                            P, (W.x or 0.0, W.y or 0.0))
-                    else:
-                        secs = [(0, len(P) - 1, False)]
-
-                    prev_end = None
-                    for k, (i0, i1, rev) in enumerate(secs):
-                        sl = slice(i0, i1 + 1)
-                        if rev:
-                            Pp, zp, dsp, hp = P[sl][::-1], z[sl][::-1], ds[sl][::-1], hn[sl][::-1]
-                        else:
-                            Pp, zp, dsp, hp = P[sl], z[sl], ds[sl], hn[sl]
-                        nk = min(3, max(1, len(zp) // 4))
-                        rise, slen = float(zp[-nk:].mean() - zp[:nk].mean()), float(dsp.sum())
-                        z_dir = zp.copy()                      # surface height for the uphill metric
-                        if p.ramp > 0:
-                            for i in range(1, len(zp)):
-                                zp[i] = max(zp[i], zp[i - 1] - p.ramp * dsp[i])
-                            for i in range(len(zp) - 2, -1, -1):
-                                zp[i] = max(zp[i], zp[i + 1] - p.ramp * dsp[i + 1])
-                        if p.gap_flow:
-                            ha = surface.sample(HA, g, Pp[:, 0], Pp[:, 1])
-                            ha = np.maximum(np.where(np.isfinite(ha), ha, -np.inf), hp)
-                            gap = np.where(np.isfinite(ha), zp - ha, bead)
-                            gap = np.clip(gap, 0.5 * bead, 2.0 * bead)
-                        else:
-                            gap = np.full(len(zp), bead)
-
-                        note = ""
-                        if p.dir_opt and len(secs) > 1:
-                            way = "uphill" if rise > 1e-6 else ("downhill" if rise < -1e-6 else "flat")
-                            note = f"section {k + 1}/{len(secs)}: {way} {rise:+.2f} mm over {slen:.1f} mm"
-                            if prev_end is not None:
-                                note += (f" - cut at X{prev_end[0]:.2f} Y{prev_end[1]:.2f} "
-                                         f"Z{prev_end[2]:.2f}")
-                        emit_path(Pp, zp, dsp, gap, note, dirz=z_dir)
-                        if k < len(secs) - 1:
-                            stats["cuts"].append({"x": round(float(Pp[-1, 0]), 2), "y": round(float(Pp[-1, 1]), 2),
-                                                  "z": round(float(zp[-1]), 2), "rise": round(rise, 3),
-                                                  "len": round(slen, 2)})
-                        prev_end = (float(Pp[-1, 0]), float(Pp[-1, 1]), float(zp[-1]))
+            note = ""
+            if p.dir_opt and it["n"] > 1:
+                way = "uphill" if rise > 1e-6 else ("downhill" if rise < -1e-6 else "flat")
+                note = f"section {it['k'] + 1}/{it['n']}: {way} {rise:+.2f} mm over {slen:.1f} mm"
+                if it["k"] > 0:
+                    cx_, cy_, cz_ = it["cut"]
+                    note += f" - cut at X{cx_:.2f} Y{cy_:.2f} Z{cz_:.2f}"
+            emit_path(Pp, zp, dsp, gap, note, dirz=z_dir)
+            if it["k"] > 0:
+                cx_, cy_, cz_ = it["cut"]
+                stats["cuts"].append({"x": round(cx_, 2), "y": round(cy_, 2), "z": round(cz_, 2),
+                                      "rise": round(rise, 3), "len": round(slen, 2)})
         # end of colour
+
     if retracted <= 0 and W.x is not None:
         W.emit(f"G1 E-{_f(retract_len[cur_slot], 5)} F{int(p.retract_speed * 60)}")
     end_z = max(W.z or 0, max_z_seen) + 1.0
@@ -481,7 +500,9 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
                     "up_mm": round(stats["dir_up_mm"], 2),
                     "down_mm": round(stats["dir_down_mm"], 2),
                     "before_mm": round(stats["dir_before_mm"], 2),
-                    "down_max": round(stats["dir_down_max"], 3)}
+                    "down_max": round(stats["dir_down_max"], 3),
+                    "travel_mm": round(stats["travel_plan_mm"], 1),
+                    "plan_down_mm": round(stats["down_plan_mm"], 2)}
     stats["end_z"] = end_z
     used_slots = sorted({s for (_, s) in groups})
     stats["colors"] = used_slots

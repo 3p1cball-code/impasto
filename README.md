@@ -48,6 +48,13 @@ G-code.
   surface instead of pushing material down. Strokes are split at crests (zigzag hysteresis, 3-point
   median against layer steps); threshold `0` splits every wave. Stats show the uphill share, the
   number of cuts and the descent that is left.
+- **Short travels** – all sections of a colour are ordered as one chain so that the nozzle leaves a
+  section where the next one starts. Every gap is a retract, a hop and a prime (that is where the
+  oozing shows), so a section may also be printed the other way round when that saves more travel
+  than the downhill costs: `dir_travel_weight` says how many millimetres of travel one millimetre of
+  downhill is worth (`0` = shortest ways only, default `10`, `20` ≈ uphill only). The order comes from
+  nearest-neighbour seeds, 2-opt/Or-opt and a few double-bridge kicks with a fixed seed, so the same
+  design always gives the same G-code.
 - **Nozzle follows the surface** – the height is the maximum of the surface under the whole nozzle
   disc plus the offset (`z_offset` can be negative). Crossings are lifted over lines already
   printed, the flow can adapt to the real gap under the nozzle.
@@ -135,6 +142,12 @@ that runs more than the split threshold against the print direction cuts the sec
 are printed from their lower end. A 3-point median ignores single layer steps, `dir_end_len` keeps
 cuts away from stroke ends and `dir_cap` optionally limits the number of parts. Every cut is
 written to the G-code as `; npg section …`, drawn as a dot in the 2D view and as a cross in 3D.
+
+**Order.** Sections of one stroke stay next to each other, and the sections of the whole colour are
+chained by a nearest-neighbour pass plus 2-opt and or-opt (`npg/tour.py`). The cost of a chain is
+`travel + weight × downhill`, so a long way round is only taken when it buys less descent than
+`dir_travel_weight` allows. The resulting travel is shown as *travel* in the stats bar, the cuts as
+`; npg section …` in the G-code.
 
 **Merge.** The block is inserted before Bambu's end G-code. The header, layer count, time estimate,
 `M73` progress, the end Z and – for `.gcode.3mf` – `slice_info.config`, `plate_<n>.json` and the

@@ -147,3 +147,41 @@ def test_single_element_header(setup):
     assert head[1] == "; CHANGE_LAYER"
     assert any(l.startswith("; Z_HEIGHT:") for l in head)
     assert any(l.startswith("; layer num/total_layer_count:") for l in head)
+
+
+def travel_mm(res):
+    mv = np.asarray(res.moves, dtype=float).reshape(-1, 9)
+    d = np.hypot(mv[:, 5] - mv[:, 2], mv[:, 6] - mv[:, 3])
+    return float(d[(mv[:, 0] == 1) & (d > 1e-3)].sum())
+
+
+def test_planned_travel_matches_the_gcode(setup):
+    job, tp, g = setup
+    res = generate.generate(job, tp, g, design(), generate.Params())
+    planned = res.stats["dir"]["travel_mm"]
+    assert planned > 0
+    assert abs(planned - travel_mm(res)) < 0.05 * travel_mm(res)
+
+
+def test_travel_weight_shortens_the_travel(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[60.0, y], [92.0, y]]} for y in np.arange(55.0, 61.0, 0.5)]
+    strict = generate.generate(job, tp, g, paths, generate.Params(dir_travel_weight=500.0))
+    loose = generate.generate(job, tp, g, paths, generate.Params(dir_travel_weight=0.0))
+    assert travel_mm(loose) < 0.8 * travel_mm(strict)       # short ways win
+    assert strict.stats["dir"]["down_mm"] <= loose.stats["dir"]["down_mm"] + 1e-9
+
+
+def test_closed_ring_stays_closed(setup):
+    # a closed outline may be entered at any vertex (it is rolled to the cheapest
+    # one); rolling must not lose or duplicate a segment
+    job, tp, g = setup
+    t = np.linspace(0, 2 * np.pi, 200)
+    pts = np.c_[106 + 2.0 * np.cos(t), 24 + 2.0 * np.sin(t)]
+    res = generate.generate(job, tp, g, [{"slot": 0, "pts": pts.tolist(), "closed": True}],
+                            generate.Params(dir_min_rise=5.0))
+    ex = res.moves[res.moves[:, 0] == 0]
+    ring_len = float(np.hypot(*np.diff(pts, axis=0).T).sum())
+    assert res.stats["strokes"][0] == 1                      # not cut
+    assert abs(res.stats["length_mm"][0] - ring_len) < 0.01   # nothing lost
+    assert np.hypot(ex[0, 2] - ex[-1, 5], ex[0, 3] - ex[-1, 6]) < 0.1   # closes

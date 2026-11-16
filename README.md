@@ -218,6 +218,12 @@ real surface, not painted on.
 - Website: <https://augenrahmen.de>
 - Instagram: <https://www.instagram.com/augenrahmen/>
 
+### Videos
+
+- [Non-Planar 3D Printing – how I approached it](https://www.youtube.com/watch?v=vDr6Q35kM5s) (N3RD_ kram on YouTube)
+- [Instagram reel 1](https://www.instagram.com/augenrahmen/reel/Dfx2g6cMkXK/)
+- [Instagram reel 2](https://www.instagram.com/augenrahmen/reel/Dfzas7_MIjh/)
+
 ## License
 
 AGPL-3.0-or-later. The head profiles in `npg/heads/` come from PancakeSlicer (AGPL-3.0) and

@@ -216,7 +216,7 @@ The non-planar wave is exactly the kind of decoration this tool adds to that par
 real surface, not painted on.
 
 - Website: <https://augenrahmen.de>
-- Instagram: <https://instagram.com/augenrahmen>
+- Instagram: <https://www.instagram.com/augenrahmen/>
 
 ## License
 

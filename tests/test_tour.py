@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from npg import tour
+from impasto import tour
 
 
 def cost(sections, start, ids, flips, weight):

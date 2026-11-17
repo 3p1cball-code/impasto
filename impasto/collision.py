@@ -1,7 +1,7 @@
 """Print-head collision check for the generated non-planar moves.
 
 Head geometry: axis-aligned boxes in the nozzle-tip frame (mm), taken from the PancakeSlicer
-head profiles (npg/heads/*.json, AGPL-3.0, see npg/heads/ATTRIBUTION.md).
+head profiles (impasto/heads/*.json, AGPL-3.0, see impasto/heads/ATTRIBUTION.md).
 
 Obstacles: the top-down heightmap H of the already printed part; empty cells count as the bed
 (z = 0). A box at tip position (x, y, z) collides if the highest obstacle cell under its

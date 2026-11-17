@@ -3,7 +3,7 @@
 // (native title) and data-i18n-placeholder. Dynamic text calls t("key", {vars}).
 
 const DE = {
-  "app.title": "Non-Planar Gcoder",
+  "app.title": "Impasto",
 
   "btn.load": "LADEN",
   "btn.generate": "ERZEUGEN",
@@ -325,7 +325,7 @@ const DE = {
   "tip.param.line_width": "Breite der neuen Linien (auch Abstand für Füllungen)",
   "tip.param.flow": "Multiplikator auf den Filament-Flow aus dem Bambu-Profil",
   "tip.param.speed": "wird durch die max. Volumengeschwindigkeit des Filaments begrenzt",
-  "tip.param.dir_min_rise": "Jede Kuppe/Senke, die mehr als diesen Wert gegen die Druckrichtung läuft, wird zum Schnitt – innerhalb eines Abschnitts geht es also höchstens so viel bergab. Kleiner = öfter trennen (mehr Ansätze), 0 = jede Welle. Die Schnitte stehen im G-Code als „; npg section …“.",
+  "tip.param.dir_min_rise": "Jede Kuppe/Senke, die mehr als diesen Wert gegen die Druckrichtung läuft, wird zum Schnitt – innerhalb eines Abschnitts geht es also höchstens so viel bergab. Kleiner = öfter trennen (mehr Ansätze), 0 = jede Welle. Die Schnitte stehen im G-Code als „; impasto section …“.",
   "tip.param.dir_travel_weight": "Sortiert alle Linien nach dem Fahrweg: 1 mm bergab wird wie N mm Fahrweg gerechnet. Kleiner Wert = möglichst kurze Wege zwischen den Linien (weniger Oozen, dafür mehr bergab), großer Wert = praktisch nur bergauf (dafür längere Wege). Gilt nur zusammen mit »Richtung bergauf«.",
   "tip.param.hop": "über dem höchsten Punkt entlang der Leerfahrt",
   "tip.param.retract": "−1 = Wert aus dem Bambu-Profil",
@@ -391,7 +391,7 @@ const DE = {
 };
 
 const EN = {
-  "app.title": "Non-Planar Gcoder",
+  "app.title": "Impasto",
 
   "btn.load": "LOAD",
   "btn.generate": "GENERATE",
@@ -713,7 +713,7 @@ const EN = {
   "tip.param.line_width": "Width of the new lines (also the spacing for fills)",
   "tip.param.flow": "Multiplier on the filament flow from the Bambu profile",
   "tip.param.speed": "capped by the filament's max volumetric speed",
-  "tip.param.dir_min_rise": "Every crest/dip that runs more than this against the print direction becomes a cut – inside one section it therefore descends at most this much. Smaller = cut more often (more approaches), 0 = every wave. The cuts appear in the G-code as “; npg section …”.",
+  "tip.param.dir_min_rise": "Every crest/dip that runs more than this against the print direction becomes a cut – inside one section it therefore descends at most this much. Smaller = cut more often (more approaches), 0 = every wave. The cuts appear in the G-code as “; impasto section …”.",
   "tip.param.dir_travel_weight": "Sorts all lines by travel: 1 mm downhill counts like N mm of travel. Small = as little travel between the lines as possible (less oozing, but more downhill), large = practically uphill only (but longer travels). Only used together with “Uphill direction”.",
   "tip.param.hop": "above the highest point along the travel",
   "tip.param.retract": "−1 = value from the Bambu profile",
@@ -785,7 +785,7 @@ const subs = new Set();
 
 function detect() {
   try {
-    const saved = localStorage.getItem("npg.lang");
+    const saved = localStorage.getItem("impasto.lang");
     if (LANGS.includes(saved)) return saved;
   } catch {}
   const nav = (navigator.language || "en").slice(0, 2).toLowerCase();
@@ -812,7 +812,7 @@ export function applyStatic(root = document) {
 export function setLang(l) {
   if (!LANGS.includes(l)) l = "en";
   lang = l;
-  try { localStorage.setItem("npg.lang", l); } catch {}
+  try { localStorage.setItem("impasto.lang", l); } catch {}
   document.documentElement.lang = l;
   applyStatic();
   for (const fn of subs) { try { fn(l); } catch (e) { console.error(e); } }

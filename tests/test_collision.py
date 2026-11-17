@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from npg import collision
-from npg.surface import Grid
+from impasto import collision
+from impasto.surface import Grid
 
 
 def grid(H, res=0.1, x0=0.0, y0=0.0):

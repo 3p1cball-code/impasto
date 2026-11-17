@@ -277,7 +277,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
              "short_travels": 0, "wipe_mm": 0.0, "coast_mm": 0.0, "self_lift_mm": 0.0,
              "slowed_mm": 0.0, "batches": 0, "precedences": 0, "touches": 0, "touch_skipped": 0}
 
-    W.emit("; ===== NON-PLANAR LAYER (Non-Planar Gcoder) START =====")
+    W.emit("; ===== NON-PLANAR LAYER (Impasto) START =====")
     W.emit("; CHANGE_LAYER")
     W.emit(f"; Z_HEIGHT: {_f(zn_max + off)}")
     W.emit(f"; LAYER_HEIGHT: {_f(off)}")
@@ -291,7 +291,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     W.emit("M83")
     W.emit(f"M204 S{p.accel}")
     if p.probe:
-        W.emit("; npg: touch-off is on - Z is re-zeroed on the part (G380 S3 + G92) at every touch")
+        W.emit("; impasto: touch-off is on - Z is re-zeroed on the part (G380 S3 + G92) at every touch")
 
     retracted = retract_len.get(cur_slot, 0.8)   # Bambu wipes+retracts at the end of the last layer
     safe_z = zn_max + max(p.hop, 0.4) + 0.4
@@ -417,7 +417,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
         cx, cy = W.x, W.y
         zs_, zbd = line_max(cx, cy, x, y)
         tz = max(zs_ + p.hop, zbd + p.hop_bead, zt + p.probe_clear, W.z or 0.0)
-        W.emit(f"; npg touch-off {stats['touches'] + 1} at X{x:.2f} Y{y:.2f}, planned surface Z{zt:.3f}")
+        W.emit(f"; impasto touch-off {stats['touches'] + 1} at X{x:.2f} Y{y:.2f}, planned surface Z{zt:.3f}")
         W.move(z=tz, f=1200, kind=1, slot=slot_)
         W.move(x=x, y=y, f=p.travel_speed * 60, kind=1, slot=slot_)
         stats["time_s"] += math.hypot(x - cx, y - cy) / p.travel_speed
@@ -627,7 +627,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
         # ---- order the sections so that the travels stay short: every hop is a
         #      retract + prime (oozing), so a section may also be printed the
         #      other way round when that saves more travel than the downhill
-        #      costs (see npg.tour); overlapping sections keep their stacking order
+        #      costs (see impasto.tour); overlapping sections keep their stacking order
         plan_start = (W.x or 0.0), (W.y or 0.0)
         secs_ = [(it["P"][it["i0"]], it["P"][it["i1"]], it["down_b"] - it["down_f"]) for it in bitems]
         wt = p.dir_travel_weight if p.dir_opt else 0.0
@@ -647,7 +647,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
             """Travel to P[0] and extrude along it."""
             nonlocal retracted, max_z_seen, last_line
             if note:
-                W.emit(f"; npg {note}")
+                W.emit(f"; impasto {note}")
             x0, y0, z0 = float(P[0, 0]), float(P[0, 1]), float(z[0])
             cx = W.x if W.x is not None else x0
             cy = W.y if W.y is not None else y0
@@ -872,7 +872,7 @@ def _plan_cells(bitems, secs, before, start, weight, size):
     """order sections cell by cell (square cells of ``size`` mm): cells are
     visited nearest-first as the stacking precedences allow (cells that depend
     on each other both ways are merged), the sections inside a cell are ordered
-    by :func:`npg.tour.plan`.  Returns order, flips, info and {position: cell
+    by :func:`impasto.tour.plan`.  Returns order, flips, info and {position: cell
     centre} where a new cell starts."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components

@@ -373,7 +373,7 @@ class Printer:
                 self.client = None
             self.report = {}
             self.error = None
-            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"npgcoder{int(time.time()) % 100000}",
+            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"impasto{int(time.time()) % 100000}",
                             protocol=mqtt.MQTTv311)
             c.tls_set(cert_reqs=ssl.CERT_NONE)
             c.tls_insecure_set(True)
@@ -511,7 +511,7 @@ class Printer:
                 res["ack"] = {k: p.get(k) for k in ("result", "reason", "sequence_id")}
                 done.set()
 
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"npgstart{int(time.time()) % 100000}",
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"impastostart{int(time.time()) % 100000}",
                         protocol=mqtt.MQTTv311)
         c.tls_set(cert_reqs=ssl.CERT_NONE)
         c.tls_insecure_set(True)

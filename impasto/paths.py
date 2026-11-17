@@ -6,4 +6,4 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
-DATA = Path(os.environ.get("NPG_DATA", ROOT / "data"))
+DATA = Path(os.environ.get("IMPASTO_DATA") or os.environ.get("NPG_DATA") or ROOT / "data")

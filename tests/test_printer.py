@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from npg import printer
+from impasto import printer
 
 PORT = 2121
 

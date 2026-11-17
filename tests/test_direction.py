@@ -1,6 +1,6 @@
 import numpy as np
 
-from npg import direction
+from impasto import direction
 
 
 def _line(n=401, length=100.0):

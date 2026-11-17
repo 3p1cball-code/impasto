@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from npg import printer, server
+from impasto import printer, server
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "Brille_RIG_MKV_2026_Master_plate_2.gcode.3mf"

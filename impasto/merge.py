@@ -90,7 +90,7 @@ def merged_lines(job: Job, res: Result) -> list[str]:
         ln = lines[i]
         m = re.match(r"^G[01] Z([\d.]+)(.*)$", ln)
         if m and float(m.group(1)) < safe:
-            lines[i] = f"G1 Z{safe:.2f}{m.group(2)} ; raised by Non-Planar Gcoder"
+            lines[i] = f"G1 Z{safe:.2f}{m.group(2)} ; raised by Impasto"
         if re.match(r"^G[01] .*[XY]", ln):
             break
 

@@ -1,5 +1,5 @@
 """AMS mapping: every used filament must get a tray, the external spool is never used."""
-from npg import printer
+from impasto import printer
 
 TRAYS = [
     {"slot": 0, "type": "PHA", "color": "#FFFFFF", "remain": 100},
@@ -60,7 +60,7 @@ def test_more_filaments_than_trays_is_refused():
 
 
 def test_ams_messages_follow_the_request_language():
-    from npg.i18n import LANG
+    from impasto.i18n import LANG
     token = LANG.set("de")
     try:
         assert "2 im AMS" in printer.match_mapping(COLORS, TYPES, [0, 1, 2, 3], TRAYS[:2])["error"]

@@ -1,6 +1,6 @@
 """User-facing backend messages in the request language.
 
-The language comes from the ``X-NPG-Lang`` header (the web UI always sends it) or the
+The language comes from the ``X-Impasto-Lang`` header (the web UI always sends it) or the
 ``Accept-Language`` header. Errors raised in background threads (MQTT callbacks) store a
 message key and are translated when the status is read in a request.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 
-LANG: ContextVar[str] = ContextVar("npg_lang", default="en")
+LANG: ContextVar[str] = ContextVar("impasto_lang", default="en")
 
 MESSAGES: dict[str, dict[str, str]] = {
     "error.file_not_found": {"de": "Datei nicht gefunden", "en": "File not found"},
@@ -86,5 +86,6 @@ def t(key: str, **kw) -> str:
 
 
 def language_from(headers) -> str:
-    v = (headers.get("x-npg-lang") or headers.get("accept-language") or "").strip().lower()
+    v = (headers.get("x-impasto-lang") or headers.get("x-npg-lang")
+         or headers.get("accept-language") or "").strip().lower()
     return "de" if v.startswith("de") else "en"

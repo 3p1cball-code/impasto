@@ -1,7 +1,7 @@
 from pathlib import Path
 import re
 import pytest
-from npg import bambu, toolchange
+from impasto import bambu, toolchange
 
 SAMPLE = Path(__file__).resolve().parents[1] / "Brille_MK_V_hinge_prototype_V_front_PHA_4h0m.gcode"
 

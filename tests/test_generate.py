@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from npg import bambu, generate, merge, parse, surface
+from impasto import bambu, generate, merge, parse, surface
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE3MF = ROOT / "Brille_RIG_MKV_2026_Master_plate_2.gcode.3mf"
@@ -93,7 +93,7 @@ def test_merge_and_3mf(setup):
     for a, b in zip(job.lines[job.exec_start:job.insert_at], lines[job.exec_start:job.insert_at]):
         if a != b:
             assert a.startswith("M73 P") and b.startswith("M73 P")
-    i = lines.index("; ===== NON-PLANAR LAYER (Non-Planar Gcoder) START =====")
+    i = lines.index("; ===== NON-PLANAR LAYER (Impasto) START =====")
     assert i == job.insert_at
     # end gcode lowered-z line raised above the decoration
     m = [l for l in lines if "lower z a little" in l][-1]

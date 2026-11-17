@@ -1,4 +1,4 @@
-"""FastAPI backend of the Non-Planar Gcoder web app."""
+"""FastAPI backend of the Impasto web app."""
 from __future__ import annotations
 
 import base64
@@ -27,7 +27,7 @@ from .paths import DATA, WEB
 
 DATA.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Non-Planar Gcoder", version=__version__)
+app = FastAPI(title="Impasto", version=__version__)
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 
@@ -576,7 +576,11 @@ app.mount("/", StaticFiles(directory=WEB), name="web")
 
 def main():
     import uvicorn
-    uvicorn.run(app, host=os.environ.get("NPG_HOST", "0.0.0.0"), port=int(os.environ.get("NPG_PORT", "6868")))
+    uvicorn.run(
+        app,
+        host=os.environ.get("IMPASTO_HOST") or os.environ.get("NPG_HOST") or "0.0.0.0",
+        port=int(os.environ.get("IMPASTO_PORT") or os.environ.get("NPG_PORT") or "6868"),
+    )
 
 
 if __name__ == "__main__":

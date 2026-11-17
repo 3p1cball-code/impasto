@@ -1,7 +1,7 @@
 """Travel-minimising order for the non-planar sections.
 
 Each section is a short stroke with two ends.  Which end is printed first is not
-only a print-quality question ("uphill first", see :mod:`npg.direction`) but also
+only a print-quality question ("uphill first", see :mod:`impasto.direction`) but also
 a travel question: every gap between two sections is a retract, a hop and a
 prime, and a long gap leaves a blob.  This module orders the sections and
 chooses their direction so that the travels stay short, while a downhill

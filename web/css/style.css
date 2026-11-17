@@ -103,7 +103,7 @@ details summary { cursor: pointer; color: var(--dim); font-size: 11px; letter-sp
   border-left: 1px solid var(--line); font: 11px/1.45 var(--mono); padding: 8px 0; color: var(--dim); }
 .codeview .ln { padding: 0 10px; white-space: pre; }
 .codeview .ln.cur { background: #f2a33a30; color: var(--fg); }
-.codeview .ln.npg { color: #6fd3ff; }
+.codeview .ln.impasto { color: #6fd3ff; }
 .codeview .ln .no { color: #555; display: inline-block; width: 52px; }
 .toast { position: fixed; bottom: 46px; left: 50%; transform: translateX(-50%); background: var(--bg3); border: 1px solid var(--acc);
   padding: 8px 14px; z-index: 50; max-width: 70vw; }

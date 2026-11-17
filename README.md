@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/design-2d.png" alt="Non-Planar Gcoder – design view of a glasses front with a wave pattern" width="100%">
+  <img src="docs/design-2d.png" alt="Impasto – design view of a glasses front with a wave pattern" width="100%">
 </p>
 
-# Non-Planar Gcoder
+# Impasto
 
 **Add one non-planar decoration layer to an already sliced Bambu Studio print – in the browser.**
 
@@ -24,6 +24,13 @@ The example part in the screenshots is a compostable eyewear front from
 <p align="center">
   <img src="docs/print-preview-3d.png" alt="3D preview of the generated toolpath with the print head" width="100%">
 </p>
+
+## The name
+
+*Impasto* is the painter's term for paint laid on so thickly that the brushstroke stands up from
+the canvas. That is what this tool adds to a print: a raised pass of its own – one bead of
+filament wide, in up to four colours – on a surface that is already finished. It decorates and
+labels the surface; it does not plan the print.
 
 ## Why
 
@@ -126,27 +133,27 @@ the one thing this tool is built for.
 ## Quick start
 
 ```bash
-git clone https://github.com/3p1cball-code/non-planar-gcoder.git
-cd non-planar-gcoder
+git clone https://github.com/3p1cball-code/impasto.git
+cd impasto
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m npg.server
+.venv/bin/python -m impasto.server
 ```
 
 Open <http://localhost:6868>.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NPG_PORT` | `6868` | HTTP port |
-| `NPG_HOST` | `0.0.0.0` | bind address (use `127.0.0.1` for local only) |
-| `NPG_DATA` | `./data` | uploads, designs, variants, printer settings |
+| `IMPASTO_PORT` | `6868` | HTTP port |
+| `IMPASTO_HOST` | `0.0.0.0` | bind address (use `127.0.0.1` for local only) |
+| `IMPASTO_DATA` | `./data` | uploads, designs, variants, printer settings |
 
 Run it as a systemd user service (autostart, restart on failure):
 
 ```bash
-cp deploy/npgcoder.service ~/.config/systemd/user/
+cp deploy/impasto.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now npgcoder
+systemctl --user enable --now impasto
 ```
 
 `deploy/deploy.sh user@host` syncs the working tree to another machine, installs the
@@ -189,16 +196,16 @@ surface point and `hop_bead` over the highest printed line along their path; sho
 that runs more than the split threshold against the print direction cuts the section; both halves
 are printed from their lower end. A 3-point median ignores single layer steps, `dir_end_len` keeps
 cuts away from stroke ends and `dir_cap` optionally limits the number of parts. Every cut is
-written to the G-code as `; npg section …`, drawn as a dot in the 2D view and as a cross in 3D.
+written to the G-code as `; impasto section …`, drawn as a dot in the 2D view and as a cross in 3D.
 
 **Order.** Overlapping sections of different elements get a precedence (lower element first, within
 line width + nozzle radius). Colour batches are formed from that: all groups of a colour whose
 predecessors are done are printed together, the colour order follows the least purge. Inside a
-batch the sections are chained by a nearest-neighbour pass plus 2-opt and or-opt (`npg/tour.py`),
+batch the sections are chained by a nearest-neighbour pass plus 2-opt and or-opt (`impasto/tour.py`),
 every move checked against the precedences. The cost of a chain is
 `travel + weight × downhill`, so a long way round is only taken when it buys less descent than
 `dir_travel_weight` allows. The resulting travel is shown as *travel* in the stats bar, the cuts as
-`; npg section …` in the G-code.
+`; impasto section …` in the G-code.
 
 **Merge.** The block is inserted before Bambu's end G-code. The header, layer count, time estimate,
 `M73` progress, the end Z and – for `.gcode.3mf` – `slice_info.config`, `plate_<n>.json` and the
@@ -225,7 +232,7 @@ starts a new job.
 
 ## Collision check
 
-`npg/heads/` contains 56 head envelopes from [PancakeSlicer](https://github.com/zimengxiong/PancakeSlicer)
+`impasto/heads/` contains 56 head envelopes from [PancakeSlicer](https://github.com/zimengxiong/PancakeSlicer)
 (AGPL-3.0) as axis-aligned boxes in the nozzle-tip frame. The check samples each move, tests the
 nozzle cone and the boxes against the height map and reports the hit boxes and depth. The profiles
 are conservative envelopes, not exact CAD. Three derived presets drop the part cooling fan and its
@@ -247,7 +254,7 @@ POST /api/job/{id}/send?plate=2               {start} -> FTPS upload (+ MQTT sta
 GET  /api/printer/status                      state, progress, AMS trays
 ```
 
-The `X-NPG-Lang: de|en` header selects the language of backend messages.
+The `X-Impasto-Lang: de|en` header selects the language of backend messages.
 
 ## Limits
 
@@ -298,8 +305,8 @@ real surface, not painted on.
 
 ## License
 
-AGPL-3.0-or-later. The head profiles in `npg/heads/` come from PancakeSlicer (AGPL-3.0) and
-require the same license; see `npg/heads/ATTRIBUTION.md`. three.js is MIT, FastAPI, uvicorn,
+AGPL-3.0-or-later. The head profiles in `impasto/heads/` come from PancakeSlicer (AGPL-3.0) and
+require the same license; see `impasto/heads/ATTRIBUTION.md`. three.js is MIT, FastAPI, uvicorn,
 numpy, scipy and paho-mqtt keep their own licenses.
 
 No telemetry, no accounts, no cloud: uploads, designs and printer settings stay in `data/`.

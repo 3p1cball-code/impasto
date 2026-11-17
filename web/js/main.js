@@ -1,4 +1,4 @@
-// Non-Planar Gcoder – app controller.
+// Impasto – app controller.
 import { Surface } from "./grid.js";
 import { Editor2D } from "./editor2d.js";
 import { View3D } from "./view3d.js";
@@ -68,11 +68,11 @@ const app = {
   gen: null, genStale: true, genLines: null,
   lastSlot: null,
 };
-window.npg = app;
+window.impasto = app;
 
 // ------------------------------------------------------------------ helpers
 async function api(path, opts = {}) {
-  const headers = Object.assign({ "X-NPG-Lang": getLang() }, opts.headers || {});
+  const headers = Object.assign({ "X-Impasto-Lang": getLang() }, opts.headers || {});
   const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     let msg = r.statusText;
@@ -286,7 +286,9 @@ async function loadHeads() {
   app.heads = list;
   sel.value = app.head || "";
 }
-function headKey() { return `npg.head.${app.meta?.printer || ""}.${app.meta?.nozzle || ""}`; }
+function headKey() { return `impasto.head.${app.meta?.printer || ""}.${app.meta?.nozzle || ""}`; }
+// older builds stored the same values under "npg.*"
+function lsOld(key) { return localStorage.getItem("npg." + key); }
 async function applyHead(id, persist = true) {
   const sel = $("headSel");
   if (id && !app.heads?.some(h => h.id === id)) id = "";
@@ -299,7 +301,7 @@ async function applyHead(id, persist = true) {
   v3.setHead(json);
 }
 function selectHeadForJob() {
-  const stored = localStorage.getItem(headKey());
+  const stored = localStorage.getItem(headKey()) ?? lsOld(`head.${app.meta?.printer || ""}.${app.meta?.nozzle || ""}`);
   const id = stored === "off" ? "" : (stored || defaultHead(app.meta?.nozzle || 0.4));
   return applyHead(id, false);
 }
@@ -399,7 +401,7 @@ async function openFile(fid, plate) {
     const t0 = performance.now();
     const meta = await (await api(`/api/job/${fid}?plate=${plate}`)).json();
     app.fid = fid; app.plate = plate; app.meta = meta;
-    localStorage.setItem("npg.last", JSON.stringify({ fid, plate }));
+    localStorage.setItem("impasto.last", JSON.stringify({ fid, plate }));
     // design
     let design = null;
     try { design = await (await api(`/api/job/${fid}/design?plate=${plate}`)).json(); } catch {}
@@ -1261,7 +1263,7 @@ function updatePlay(i) {
   if (!$("codeView").classList.contains("hidden")) {
     const a = Math.max(0, line - 14), b = Math.min(g.codeLines.length, line + 30);
     let html = "";
-    for (let k = a; k < b; k++) html += `<div class="ln${k === line ? " cur" : ""}${g.codeLines[k].startsWith("; npg") ? " npg" : ""}"><span class="no">${k + 1}</span>${esc(g.codeLines[k])}</div>`;
+    for (let k = a; k < b; k++) html += `<div class="ln${k === line ? " cur" : ""}${g.codeLines[k].startsWith("; impasto") ? " impasto" : ""}"><span class="no">${k + 1}</span>${esc(g.codeLines[k])}</div>`;
     $("codeView").innerHTML = html;
   }
 }
@@ -1399,7 +1401,7 @@ updateDesignStats();
   try {
     await Promise.all([refreshFiles(), loadHeads()]);
     let last = null;
-    try { last = JSON.parse(localStorage.getItem("npg.last") || "null"); } catch {}
+    try { last = JSON.parse(localStorage.getItem("impasto.last") || localStorage.getItem("npg.last") || "null"); } catch {}
     const f = (last && app.files.find(x => x.id === last.fid)) || app.files[0];
     if (f) {
       $("fileSel").value = f.id;

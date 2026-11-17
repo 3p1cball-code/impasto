@@ -6,7 +6,7 @@ On that printer the fan and the duct are one assembly (Bambu FAF006), so without
 six duct boxes (outlets, outer walls, risers) and the part_cooling_fan box no longer exist.
 The stock profile would report hits on those boxes that cannot happen in reality.
 
-The derived files stay inside npg/heads and inherit the AGPL-3.0 provenance of the source.
+The derived files stay inside impasto/heads and inherit the AGPL-3.0 provenance of the source.
 
 Run:  python3 tools/make_head_variants.py
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-HEADS = Path(__file__).resolve().parents[1] / "npg" / "heads"
+HEADS = Path(__file__).resolve().parents[1] / "impasto" / "heads"
 
 # A1 mini: part cooling fan + duct as one part -> every box that belongs to it
 A1_MINI_DUCT = (

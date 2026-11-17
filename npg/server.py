@@ -256,6 +256,9 @@ def job_generate(fid: str, plate: int = 1, body: dict = Body(...)):
         "collisions": coll,
         "gcode": res.gcode if len(res.gcode) < 3_000_000 else res.gcode[:3_000_000] + "\n; ... truncated",
         "moves": base64.b64encode(res.moves.astype(np.float32).tobytes()).decode(),
+        "flags": base64.b64encode((res.flags if res.flags is not None
+                                   else np.zeros(len(res.moves), np.uint8)).astype(np.uint8).tobytes()).decode(),
+        "retracts": np.round(res.retracts, 3).tolist() if res.retracts is not None else [],
         "lines": res.gcode.count("\n"),
     }
 
@@ -303,7 +306,51 @@ def job_export(fid: str, plate: int = 1, fmt: str = "3mf"):
             data = merge.build_3mf(s.job, s.result, text)
             name = f"{base}_nonplanar.gcode.3mf"
             mt = "application/octet-stream"
+    _log_export(fid, s, name, fmt)
     return Response(data, media_type=mt, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+EXPORT_KEYS = ("toolchanges", "purge_mm3", "time_s", "max_z", "stacked_mm", "elements", "travel_mm",
+               "retracts", "short_travels", "wipe_mm", "coast_mm", "self_lift_mm", "slowed_mm",
+               "batches", "precedences", "length_mm", "filament_mm", "volume_mm3")
+
+
+def export_record(s, name: str, kind: str) -> dict:
+    st = s.result.stats
+    rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "name": name, "plate": s.plate,
+           "source": s.filename, "stats": _jsonable({k: st.get(k) for k in EXPORT_KEYS if k in st}),
+           "dir": _jsonable(st.get("dir", {})), "params": _jsonable(s.result_params or {})}
+    d = rec["dir"]
+    up, dn = d.get("up_mm", 0) or 0, d.get("down_mm", 0) or 0
+    rec["uphill_pct"] = round(100 * up / max(up + dn, 1e-9), 1)
+    return rec
+
+
+def _log_export(fid: str, s, name: str, kind: str):
+    """every export / send leaves its key figures behind (data/<fid>/exports.jsonl),
+    so a print result can later be matched with the numbers that produced it"""
+    try:
+        rec = export_record(s, name, kind)
+        with open(DATA / fid / "exports.jsonl", "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception as ex:          # never let the log break an export
+        print(f"[export-log] {ex}", flush=True)
+
+
+@app.get("/api/job/{fid}/exports")
+def job_exports(fid: str, plate: int | None = None, limit: int = 50):
+    f = DATA / fid / "exports.jsonl"
+    if not f.exists():
+        return []
+    out = []
+    for ln in f.read_text().splitlines():
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if plate is None or r.get("plate") == plate:
+            out.append(r)
+    return out[-max(1, min(limit, 500)):][::-1]
 
 
 # ---------------------------------------------------------------------------- printer
@@ -409,6 +456,7 @@ def job_send(fid: str, plate: int = 1, body: dict = Body(default={})):
         up = printer.upload(ip, code, name, data)
     except Exception as ex:
         raise HTTPException(400, T("error.upload_failed", ex=ex))
+    _log_export(fid, s, name, "send+start" if do_start else "send")
     out = {"upload": up, "name": name, "started": False}
     if do_start:
         out["mapping"] = mapping

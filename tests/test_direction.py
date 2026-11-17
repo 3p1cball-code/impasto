@@ -123,3 +123,19 @@ def test_old_caps_are_not_applied_by_default():
 def test_single_sample_stair_spike_does_not_cut():
     z = np.r_[np.full(20, 5.0), 5.12, np.full(20, 5.0)] + np.linspace(0, 0.5, 41)
     assert len(_plan(z, P=_line(41, 10.0), min_rise=0.01)) == 1
+
+
+def test_steep_end_stub_is_cut_when_allowed():
+    # a long climb, then a steep drop within the last 0.3 mm (inside the end protection)
+    s = np.arange(0, 10.0 + 1e-9, 0.1)
+    z = 0.05 * s
+    tail = s > 9.7 + 1e-6
+    z[tail] = z[~tail][-1] - (s[tail] - 9.7) * 0.8
+    P = np.c_[s, np.zeros_like(s)]
+    keep = direction.plan(P, z, min_rise=0.1, min_len=0.5)
+    cut = direction.plan(P, z, min_rise=0.1, min_len=0.5, stub_slope=0.25)
+    assert len(keep) == 1
+    assert len(cut) == 2
+    assert cut[1][2] is True              # the stub is printed backwards = uphill
+    flat = direction.plan(P, z, min_rise=0.1, min_len=0.5, stub_slope=5.0)
+    assert len(flat) == 1                 # not steep enough for that limit

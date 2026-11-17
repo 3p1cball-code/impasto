@@ -25,7 +25,7 @@ export class View3D {
     dl.position.set(-60, 80, 160);
     this.scene.add(dl);
     this.groups = {};
-    for (const k of ["bed", "surface", "orig", "design", "gcode", "travel", "marker", "coll", "cuts"]) {
+    for (const k of ["bed", "surface", "orig", "design", "gcode", "travel", "marker", "coll", "cuts", "retr"]) {
       this.groups[k] = new THREE.Group();
       this.scene.add(this.groups[k]);
     }
@@ -209,28 +209,49 @@ export class View3D {
   }
 
   // ------------------------------------------------------------ generated G-code
-  setGcode(moves, lw, travelOn) {
-    this.clear("gcode"); this.clear("travel"); this.clear("marker");
-    this.moves = moves;
+  // flags (Uint8Array per move): 1 = runs downhill, 2 = coast, 4 = wipe;
+  // retracts: [[x,y,z]] where the nozzle retracted
+  setGcode(moves, lw, travelOn, flags = null, retracts = null, opts = {}) {
+    this.clear("gcode"); this.clear("travel"); this.clear("marker"); this.clear("retr");
+    this.moves = moves; this.flags = flags; this.retracts = retracts; this.lw = lw;
+    this.downOn = opts.down ?? this.downOn ?? false;
     const n = moves.length / 9;
-    const ep = [], ec = [], tp = [];
+    const ep = [], ec = [], tp = [], wp = [];
     this.prefE = new Int32Array(n + 1);
     this.prefT = new Int32Array(n + 1);
-    const c = new THREE.Color();
+    this.prefW = new Int32Array(n + 1);
+    const c = new THREE.Color(), red = new THREE.Color(0xff3b30);
     for (let i = 0; i < n; i++) {
       const o = i * 9, kind = moves[o];
       this.prefE[i + 1] = this.prefE[i];
       this.prefT[i + 1] = this.prefT[i];
+      this.prefW[i + 1] = this.prefW[i];
       if (kind === 0) {
-        c.set(this.app.slotColor(moves[o + 1]));
+        if (this.downOn && flags && (flags[i] & 1)) c.copy(red);
+        else c.set(this.app.slotColor(moves[o + 1]));
         ep.push(moves[o + 2], moves[o + 3], moves[o + 4], moves[o + 5], moves[o + 6], moves[o + 7]);
         ec.push(c.r, c.g, c.b, c.r, c.g, c.b);
         this.prefE[i + 1]++;
       } else if (kind === 1) {
         tp.push(moves[o + 2], moves[o + 3], moves[o + 4], moves[o + 5], moves[o + 6], moves[o + 7]);
         this.prefT[i + 1]++;
+      } else if (kind === 3) {          // wipe / coast: along the bead without material
+        wp.push(moves[o + 2], moves[o + 3], moves[o + 4] + 0.02, moves[o + 5], moves[o + 6], moves[o + 7] + 0.02);
+        this.prefW[i + 1]++;
       }
     }
+    if (wp.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(wp), 3));
+      this.wLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xf2a33a, transparent: true, opacity: 0.9, depthTest: false }));
+      this.groups.retr.add(this.wLines);
+    } else this.wLines = null;
+    if (retracts?.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(retracts.flat()), 3));
+      this.groups.retr.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xf2a33a, size: 4, sizeAttenuation: false, depthTest: false })));
+    }
+    if (opts.retr != null) this.groups.retr.visible = opts.retr;
     if (ep.length) {
       const geo = new LineSegmentsGeometry();
       geo.setPositions(ep); geo.setColors(ec);
@@ -337,6 +358,7 @@ export class View3D {
     i = Math.max(0, Math.min(n, i | 0));
     if (this.gLines) this.gLines.geometry.instanceCount = this.prefE[i];
     if (this.tLines) this.tLines.geometry.setDrawRange(0, this.prefT[i] * 2);
+    if (this.wLines) this.wLines.geometry.setDrawRange(0, this.prefW[i] * 2);
     this.playI = i;
     const useHead = !!(this.headGroup && this.xray);
     const tool = useHead ? this.headGroup : this.cone;
@@ -355,6 +377,17 @@ export class View3D {
   }
 
   show(name, v) { this.groups[name].visible = v; this.render(); }
+
+  // red = extrusion that runs downhill on the surface
+  setDown(on) {
+    this.downOn = on;
+    if (!this.moves) return;
+    const i = this.playI, travelOn = this.groups.travel.visible, retrOn = this.groups.retr.visible;
+    const coll = this.collMoves;
+    this.setGcode(this.moves, this.lw, travelOn, this.flags, this.retracts, { down: on, retr: retrOn });
+    this.collMoves = coll;
+    this.setPlay(i ?? this.moves.length / 9);
+  }
 }
 
 function densify(pts, step) {

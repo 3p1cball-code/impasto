@@ -71,7 +71,8 @@ def _turns(z: np.ndarray, h: float) -> list[tuple[int, float, bool]]:
 
 
 def plan(P: np.ndarray, z: np.ndarray, *, min_rise: float = 0.10, min_len: float = 0.5,
-         max_parts: int = 0, smooth: float = 0.0) -> list[tuple[int, int, bool | None]]:
+         max_parts: int = 0, smooth: float = 0.0,
+         stub_slope: float = 0.0) -> list[tuple[int, int, bool | None]]:
     """Split ``P``/``z`` into sections that can each be printed uphill.
 
     Returns ``[(i0, i1, rev)]`` covering the whole polyline in index order.
@@ -80,7 +81,9 @@ def plan(P: np.ndarray, z: np.ndarray, *, min_rise: float = 0.10, min_len: float
 
     ``min_len`` only protects the two ends of the stroke: a turn closer than
     that to the start or end is not cut off (a tiny stub would just be a
-    blob).  ``max_parts`` <= 0 means unlimited; a cap drops the weakest turns
+    blob) – unless the stub falls steeper than ``stub_slope`` (dz/ds, 0 = never);
+    such a stub then is printed on its own, uphill, right next to its
+    neighbour (a short travel without retract).  ``max_parts`` <= 0 means unlimited; a cap drops the weakest turns
     first and then leaves some downhill.  ``smooth`` is accepted for old
     designs and ignored – smoothing hid real dips.
     """
@@ -101,7 +104,20 @@ def plan(P: np.ndarray, z: np.ndarray, *, min_rise: float = 0.10, min_len: float
         a, b = max(i - 1, 0), min(i + 2, n)
         seg = z[a:b]
         turns.append((a + int(np.argmax(seg) if peak else np.argmin(seg)), w))
-    cuts = [(i, w) for i, w in turns if s[i] >= min_len and L - s[i] >= min_len]
+    def keep(i):
+        if s[i] >= min_len and L - s[i] >= min_len:
+            return True
+        if stub_slope <= 0 or i < 2 or i > n - 3:
+            return False
+        # an end stub: only worth its own section when it falls steeply
+        a = 0 if s[i] < min_len else n - 1
+        if s[i] < min_len and L - s[i] < min_len:
+            return False
+        drop = abs(float(z[i] - z[a]))
+        ln = max(abs(float(s[i] - s[a])), 1e-9)
+        return drop > h and drop / ln >= stub_slope
+
+    cuts = [(i, w) for i, w in turns if keep(i)]
     if max_parts and max_parts > 0:
         while len(cuts) + 1 > max_parts:
             cuts.pop(min(range(len(cuts)), key=lambda k: cuts[k][1]))

@@ -157,10 +157,12 @@ def travel_mm(res):
 
 def test_planned_travel_matches_the_gcode(setup):
     job, tp, g = setup
-    res = generate.generate(job, tp, g, design(), generate.Params())
+    # without wipe: a wipe ends the line up to 2 mm away from where the plan expects it
+    res = generate.generate(job, tp, g, design(), generate.Params(wipe=0))
     planned = res.stats["dir"]["travel_mm"]
     assert planned > 0
     assert abs(planned - travel_mm(res)) < 0.05 * travel_mm(res)
+    assert abs(res.stats["dir"]["travel_real_mm"] - travel_mm(res)) < 1.0
 
 
 def test_travel_weight_shortens_the_travel(setup):
@@ -185,3 +187,122 @@ def test_closed_ring_stays_closed(setup):
     assert res.stats["strokes"][0] == 1                      # not cut
     assert abs(res.stats["length_mm"][0] - ring_len) < 0.01   # nothing lost
     assert np.hypot(ex[0, 2] - ex[-1, 5], ex[0, 3] - ex[-1, 6]) < 0.1   # closes
+
+
+def e_values(text):
+    out = []
+    for ln in text.split("\n"):
+        m = re.search(r"\bE(-?[\d.]+)", ln.split(";")[0]) if ln.startswith("G1") else None
+        if m:
+            out.append((ln, float(m.group(1))))
+    return out
+
+
+def test_wipe_retracts_along_the_line(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[60, 56], [75, 56]]}, {"slot": 0, "pts": [[60, 59], [75, 59]]}]
+    res = generate.generate(job, tp, g, paths, generate.Params(wipe=2.0, retract=0.8, retract_before_wipe=0))
+    wipes = res.moves[res.moves[:, 0] == 3]
+    assert len(wipes) > 0
+    assert (res.flags[res.moves[:, 0] == 3] & generate.FLAG_WIPE).all()
+    # the wipe runs back over the line just printed, 2 mm long
+    d = np.hypot(wipes[:, 5] - wipes[:, 2], wipes[:, 6] - wipes[:, 3]).sum()
+    assert abs(d - 2.0 * res.stats["retracts"]) < 0.05 * res.stats["retracts"] + 1e-6
+    # every retract pulls exactly the retract length back, partly during the wipe
+    neg = [e for ln, e in e_values(res.gcode) if e < 0]
+    assert abs(sum(neg) + 0.8 * res.stats["retracts"]) < 1e-3
+    off = generate.generate(job, tp, g, paths, generate.Params(wipe=0, retract=0.8))
+    assert (off.moves[:, 0] == 3).sum() == 0
+
+
+def test_coasting_ends_lines_without_material(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[60, 56], [75, 56]]}, {"slot": 0, "pts": [[60, 54.5], [75, 54.5]]}]
+    a = generate.generate(job, tp, g, paths, generate.Params(coast=0.4, wipe=0))
+    b = generate.generate(job, tp, g, paths, generate.Params(coast=0.0, wipe=0))
+    assert a.stats["coast_mm"] > 0.7
+    assert ((a.flags & generate.FLAG_COAST) > 0).sum() > 0
+    assert sum(a.stats["filament_mm"].values()) < sum(b.stats["filament_mm"].values())
+
+
+def test_self_crossing_is_lifted(setup):
+    job, tp, g = setup
+    # a figure-eight crosses itself in the middle
+    t = np.linspace(0, 2 * np.pi, 400)
+    pts = np.c_[100 + 6 * np.sin(t), 55.2 + 1.2 * np.sin(2 * t)]
+    p = generate.Params(dir_opt=False)
+    res = generate.generate(job, tp, g, [{"slot": 0, "pts": pts.tolist()}], p)
+    assert res.stats["self_lift_mm"] > 0
+    ex = res.moves[res.moves[:, 0] == 0]
+    near = np.hypot(ex[:, 5] - 100, ex[:, 6] - 55.2) < 0.15
+    zs = surface.sample_max(g.ZN, g, ex[near, 5], ex[near, 6])
+    assert (ex[near, 7] - zs).max() > p.z_offset + 0.1      # second pass sits on the first
+
+
+def test_tight_curves_are_slower(setup):
+    job, tp, g = setup
+    t = np.linspace(0, 2 * np.pi, 200)
+    ring = np.c_[92 + 0.8 * np.cos(t), 55.2 + 0.8 * np.sin(t)]
+    slow = generate.generate(job, tp, g, [{"slot": 0, "pts": ring.tolist(), "closed": True}],
+                             generate.Params(curve_radius=2.0, curve_min=0.5, speed=15, dir_min_rise=5))
+    fast = generate.generate(job, tp, g, [{"slot": 0, "pts": ring.tolist(), "closed": True}],
+                             generate.Params(curve_radius=0.0, speed=15, dir_min_rise=5))
+    assert slow.stats["slowed_mm"] > 3
+    assert slow.stats["time_s"] > fast.stats["time_s"]
+
+
+def test_overlap_keeps_the_stacking_order_across_colours(setup):
+    job, tp, g = setup
+    # element 0 (white) below, element 1 (slot 1) crosses it, element 2 (white) lies on top
+    paths = [{"slot": 0, "order": 0, "pts": [[70, 56], [90, 56]]},
+             {"slot": 1, "order": 1, "pts": [[80, 54], [80, 60]]},
+             {"slot": 0, "order": 2, "pts": [[78, 55], [82, 57]]},
+             {"slot": 0, "order": 3, "pts": [[120, 55], [140, 55]]}]       # far away: joins the first batch
+    res = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False))
+    assert res.stats["toolchanges"] == 2                  # white, slot 1, white again
+    assert res.stats["batches"] == 3
+    ch = np.nonzero(res.moves[:, 0] == 2)[0]
+    ex = res.moves[:, 0] == 0
+    first = res.moves[:ch[0]][ex[:ch[0]]]
+    assert (first[:, 5] > 119).any()                      # the far element went with the first batch
+
+
+def test_colours_are_not_interleaved_without_overlap(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "order": 0, "pts": [[60, 56], [70, 56]]},
+             {"slot": 1, "order": 0, "pts": [[60, 54.5], [70, 54.5]]},
+             {"slot": 0, "order": 1, "pts": [[100, 56], [110, 56]]},
+             {"slot": 1, "order": 1, "pts": [[100, 54.5], [110, 54.5]]}]
+    res = generate.generate(job, tp, g, paths, generate.Params())
+    assert res.stats["toolchanges"] == 1                  # was 3 with one group per element
+
+
+def test_warp_lift_raises_the_ends(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[60, 56], [120, 56]]}]
+    a = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False))
+    b = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False, warp_ends=0.5))
+    za, zb = a.moves[a.moves[:, 0] == 0][:, 7], b.moves[b.moves[:, 0] == 0][:, 7]
+    assert len(za) == len(zb)
+    d = zb - za
+    assert d.max() > 0.05 and d.min() >= -1e-4
+    assert g.ZN is not None and np.isfinite(g.ZN).any()          # session grid untouched
+    a2 = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False))
+    assert np.allclose(a2.moves, a.moves)
+
+
+def test_downhill_flags_match_the_stats(setup):
+    job, tp, g = setup
+    res = generate.generate(job, tp, g, design(), generate.Params(dir_opt=False, coast=0))
+    m = res.moves
+    dn = (m[:, 0] == 0) & ((res.flags & generate.FLAG_DOWN) > 0)
+    L = np.hypot(m[dn, 5] - m[dn, 2], m[dn, 6] - m[dn, 3]).sum()
+    assert abs(L - res.stats["dir"]["down_mm"]) < 0.5
+    assert len(res.flags) == len(res.moves)
+
+
+def test_same_design_same_gcode(setup):
+    job, tp, g = setup
+    a = generate.generate(job, tp, g, design(), generate.Params())
+    b = generate.generate(job, tp, g, design(), generate.Params())
+    assert a.gcode == b.gcode

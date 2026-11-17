@@ -104,3 +104,34 @@ def test_same_input_same_order():
     a = tour.plan(segs, (0.0, 0.0), weight=10.0)
     b = tour.plan(segs, (0.0, 0.0), weight=10.0)
     assert a[0] == b[0] and a[1] == b[1]
+
+
+def test_precedence_is_kept_small_and_large():
+    rng = np.random.default_rng(7)
+    for n in (6, 9, 40, 160):
+        segs = [(tuple(rng.uniform(0, 50, 2)), tuple(rng.uniform(0, 50, 2)), float(rng.normal()))
+                for _ in range(n)]
+        before = [(a, b) for a in range(n) for b in range(a + 1, n) if rng.random() < 3 / n]
+        ids, fls, info = tour.plan(segs, (0.0, 0.0), weight=5.0, before=before)
+        assert sorted(ids) == list(range(n))
+        pos = {k: t for t, k in enumerate(ids)}
+        assert all(pos[a] < pos[b] for a, b in before)
+        assert abs(info["cost"] - cost(segs, (0.0, 0.0), ids, fls, 5.0)[2]) < 1e-6
+
+
+def test_precedence_overrides_the_shortest_order():
+    # from the start, section 1 is right here and section 0 far away – but 0 must go first
+    segs = [((50.0, 0.0), (60.0, 0.0), 0.0), ((0.5, 0.0), (5.0, 0.0), 0.0)]
+    ids, _, _ = tour.plan(segs, (0.0, 0.0), weight=0.0, before=[(0, 1)])
+    assert ids == [0, 1]
+    ids, _, _ = tour.plan(segs, (0.0, 0.0), weight=0.0)
+    assert ids == [1, 0]
+
+
+def test_precedence_is_deterministic():
+    rng = np.random.default_rng(3)
+    segs = [(tuple(rng.uniform(0, 30, 2)), tuple(rng.uniform(0, 30, 2)), float(rng.normal())) for _ in range(60)]
+    before = [(a, a + 7) for a in range(0, 50, 3)]
+    a = tour.plan(segs, (0.0, 0.0), weight=4.0, before=before)
+    b = tour.plan(segs, (0.0, 0.0), weight=4.0, before=before)
+    assert a[0] == b[0] and a[1] == b[1]

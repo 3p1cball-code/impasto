@@ -32,6 +32,16 @@ const PARAM_UI = [
   ["min_purge", "param.minPurge", 0, 400, 5, "mm³", 1, false, "tip.param.min_purge"],
   ["accel", "param.accel", 200, 10000, 100, "mm/s²", 1, false, ""],
   ["fan", "param.fan", -1, 100, 1, "%", 1, false, "tip.param.fan"],
+  ["wipe", "param.wipe", -1, 5, 0.1, "mm", 1, false, "tip.param.wipe"],
+  ["retract_before_wipe", "param.retractBeforeWipe", -1, 100, 5, "%", 1, false, "tip.param.retract_before_wipe"],
+  ["coast", "param.coast", 0, 2, 0.05, "mm", 1, false, "tip.param.coast"],
+  ["hop_bead", "param.hopBead", 0.1, 2, 0.05, "mm", 1, false, "tip.param.hop_bead"],
+  ["curve_radius", "param.curveRadius", 0, 5, 0.1, "mm", 1, false, "tip.param.curve_radius"],
+  ["curve_min", "param.curveMin", 0.1, 1, 0.05, "%", 100, false, "tip.param.curve_min"],
+  ["dir_stub_slope", "param.dirStubSlope", 0, 2, 0.05, "dz/ds", 1, false, "tip.param.dir_stub_slope"],
+  ["warp_ends", "param.warpEnds", 0, 2, 0.05, "mm", 1, false, "tip.param.warp_ends"],
+  ["warp_edge", "param.warpEdge", 0, 1, 0.05, "mm", 1, false, "tip.param.warp_edge"],
+  ["warp_edge_width", "param.warpEdgeWidth", 0.5, 20, 0.5, "mm", 1, false, "tip.param.warp_edge_width"],
 ];
 const PARAM_BOOL = [
   ["dir_opt", "param.dirOpt", "tip.param.dir_opt"],
@@ -235,13 +245,19 @@ function renderGenStats() {
   const travelInfo = trv > 0
     ? `<span title="${t("stats.travelTip")}">${t("stats.travel")} <b>${trv.toFixed(0)} mm</b></span>`
     : "";
+  const nr = st.retracts ?? di?.retracts;
+  const retrInfo = nr != null
+    ? `<span title="${t("stats.retractsTip", { short: st.short_travels ?? 0, wipe: (+st.wipe_mm || 0).toFixed(0), coast: (+st.coast_mm || 0).toFixed(1) })}">${t("stats.retracts")} <b>${nr}</b></span>`
+    : "";
+  const downInfo = di && di.down_mm > 0.05
+    ? `<span title="${t("stats.downTip")}">${t("stats.down")} <b>${di.down_mm.toFixed(0)} mm</b></span>` : "";
   const stk = +st.stacked_mm || 0;
   const stackInfo = stk > 0.5
     ? `<span title="${t("stats.stackedTip")}">${t("stats.stacked")} <b>${stk.toFixed(0)} mm</b></span>`
     : "";
   $("statsBar").innerHTML = `<span>NON-PLANAR</span><b>${fmtTime(st.time_s)}</b>
     <span>${t("stats.toolchanges")} <b>${st.toolchanges}</b></span><span>${t("stats.purge")} <b>${(st.purge_mm3 / 1000).toFixed(2)} cm³</b></span>
-    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${travelInfo}${dirInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
+    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${travelInfo}${retrInfo}${dirInfo}${downInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
     ${st.collisions == null ? "" : `<span style="color:${st.collisions ? "var(--err,#ff3b30)" : "var(--ok,#6c6)"}">${t("stats.collisions")} <b>${st.collisions}</b> · ${st.coll_ms} ms</span>`}`;
 }
 
@@ -298,6 +314,14 @@ function markStale() {
     v3.clear("gcode"); v3.clear("travel"); v3.clear("marker"); v3.clear("coll"); v3.clear("cuts");
     $("playbar").classList.add("hidden");
     $("codeView").classList.add("hidden");
+  }
+}
+
+// a saved design may still carry an old default that has changed since
+function warnOldParams(p) {
+  if (!p) return;
+  if (p.dir_travel_weight === 2) {
+    setTimeout(() => toast(t("toast.oldWeight", { now: app.meta?.defaults?.dir_travel_weight ?? 10 }), true), 400);
   }
 }
 
@@ -371,6 +395,7 @@ async function openFile(fid, plate) {
     let design = null;
     try { design = await (await api(`/api/job/${fid}/design?plate=${plate}`)).json(); } catch {}
     app.params = Object.assign({}, meta.defaults, design?.params || {});
+    warnOldParams(design?.params);
     app.mask = Object.assign({ angle: 35, inset: 0.3, zmin: 0, minArea: 2, exclude: [] }, design?.mask || {});
     app.analysis = Object.assign({ sigma: 0.6, tip: 0.3 }, design?.analysis || {});
     app.elements = design?.elements || [];
@@ -500,6 +525,7 @@ async function loadVariant(name) {
     app.built.clear();
     app.mask = Object.assign({ angle: 35, inset: 0.3, zmin: 0, minArea: 2, exclude: [] }, d.mask || {});
     app.params = Object.assign({}, app.meta.defaults, d.params || {});
+    warnOldParams(d.params);
     if (d.analysis) app.analysis = Object.assign({ sigma: 0.6, tip: 0.3 }, d.analysis);
     if (d.lastSlot != null) app.lastSlot = d.lastSlot;
     app.selectedId = null;
@@ -1173,6 +1199,7 @@ async function _generate() {
     const u8 = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     res.movesArr = new Float32Array(u8.buffer);
+    res.flagsArr = res.flags ? Uint8Array.from(atob(res.flags), ch => ch.charCodeAt(0)) : null;
     res.codeLines = res.gcode.split("\n");
     app.gen = res; app.genStale = false;
     $("exp3mf").disabled = $("expGcode").disabled = false;
@@ -1180,7 +1207,8 @@ async function _generate() {
     renderGenStats();
     showTab("3d");
     v3.clear("design");
-    v3.setGcode(res.movesArr, app.params.line_width, $("v3Travel").checked);
+    v3.setGcode(res.movesArr, app.params.line_width, $("v3Travel").checked, res.flagsArr, res.retracts,
+      { down: $("v3Down").checked, retr: $("v3Retr").checked });
     showCollisions(res.collisions);
     v3.setCuts(res.stats.cuts);
     v3.show("cuts", $("v3Cuts").checked);
@@ -1265,6 +1293,8 @@ $("v3Zmin").onchange = () => loadOriginal();
 $("v3Xray").onchange = (e) => v3.setXray(e.target.checked);
 $("v3Coll").onchange = (e) => v3.show("coll", e.target.checked);
 $("v3Cuts").onchange = (e) => v3.show("cuts", e.target.checked);
+$("v3Down").onchange = (e) => v3.setDown(e.target.checked);
+$("v3Retr").onchange = (e) => v3.show("retr", e.target.checked);
 $("v3Top").onclick = () => v3.top();
 $("v3Iso").onclick = () => v3.home();
 

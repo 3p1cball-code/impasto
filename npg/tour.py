@@ -36,10 +36,53 @@ def _neighbours(P: np.ndarray, n: int, k: int) -> list[list[int]]:
 _EXACT_N = 9   # up to this many sections the order is solved exactly (Held-Karp)
 
 
-def _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy):
+def _preds(n: int, before) -> list[set[int]]:
+    """predecessor sets from ``before`` = [(a, b)]: a must be printed before b"""
+    pr: list[set[int]] = [set() for _ in range(n)]
+    for a, b in before or ():
+        a, b = int(a), int(b)
+        if a != b and 0 <= a < n and 0 <= b < n:
+            pr[b].add(a)
+    return pr
+
+
+def feasible(ids, preds) -> bool:
+    """every predecessor of a section comes earlier in ``ids``"""
+    pos = {k: t for t, k in enumerate(ids)}
+    return all(pos[a] < pos[b] for b in ids for a in preds[b])
+
+
+def _repair(ids, fls, preds):
+    """stable topological order: keep ``ids`` as priority, pull predecessors forward"""
+    n = len(ids)
+    rank = {k: t for t, k in enumerate(ids)}
+    fl = dict(zip(ids, fls))
+    need = [len(preds[k]) for k in range(n)]
+    succ: list[list[int]] = [[] for _ in range(n)]
+    for b in range(n):
+        for a in preds[b]:
+            succ[a].append(b)
+    import heapq
+    heap = [(rank[k], k) for k in range(n) if need[k] == 0]
+    heapq.heapify(heap)
+    out = []
+    while heap:
+        _, k = heapq.heappop(heap)
+        out.append(k)
+        for b in succ[k]:
+            need[b] -= 1
+            if need[b] == 0:
+                heapq.heappush(heap, (rank[b], b))
+    return out, [fl[k] for k in out]
+
+
+def _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy, preds=None):
     """optimal open tour with free direction per section, dynamic programming
-    over (visited set, last section, last direction); 2^n * 2n states"""
+    over (visited set, last section, last direction); 2^n * 2n states.
+    ``preds`` (list of sets) restricts the order: j may only follow once all
+    its predecessors are visited."""
     n = len(ax)
+    pm = [sum(1 << a for a in (preds[j] if preds else ())) for j in range(n)]
     hyp = math.hypot
     ent = [[(ax[i], ay[i]), (bx[i], by[i])] for i in range(n)]   # [f] -> entry
     ext = [[(bx[i], by[i]), (ax[i], ay[i])] for i in range(n)]   # [f] -> exit
@@ -52,6 +95,8 @@ def _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy):
     D = [[INF] * (2 * n) for _ in range(full)]
     P = [[-1] * (2 * n) for _ in range(full)]
     for j in range(n):
+        if pm[j]:
+            continue
         for fj in (0, 1):
             D[1 << j][2 * j + fj] = hyp(ent[j][fj][0] - sx, ent[j][fj][1] - sy) + w * dw[j][fj]
     for m in range(1, full):
@@ -63,7 +108,7 @@ def _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy):
             i, fi = divmod(s, 2)
             g = gap[i][fi]
             for j in range(n):
-                if m >> j & 1:
+                if m >> j & 1 or (pm[j] & m) != pm[j]:
                     continue
                 mj = m | (1 << j)
                 gj = g[j]
@@ -94,10 +139,12 @@ def _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy):
 
 
 def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 0,
-           starts=None):
+           starts=None, before=None):
     n = len(sections)
     if n == 0:
         return [], [], {"travel": 0.0, "downhill": 0.0, "cost": 0.0}
+    preds = _preds(n, before)
+    has_c = any(preds)
     # plain python floats: the inner loops run millions of times
     ax = [float(s[0][0]) for s in sections]
     ay = [float(s[0][1]) for s in sections]
@@ -112,7 +159,7 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
         starts = [w]
 
     if n <= _EXACT_N:
-        return _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy)
+        return _exact(ax, ay, bx, by, down_f, down_b, w, sx, sy, preds if has_c else None)
 
     # ---- nearest neighbour with a free direction -----------------------------
     A = np.array([ax, ay], dtype=np.float64).T
@@ -124,9 +171,10 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
         ids: list[int] = []
         fls: list[bool] = []
         free = np.ones(n, dtype=bool)
+        need = np.array([len(preds[k]) for k in range(n)], dtype=np.int64)
         px, py = sx, sy
         for _ in range(n):
-            idx = np.nonzero(free)[0]
+            idx = np.nonzero(free & (need == 0))[0] if has_c else np.nonzero(free)[0]
             cf = np.hypot(A[idx, 0] - px, A[idx, 1] - py) + wn * df[idx]
             cb = np.hypot(B[idx, 0] - px, B[idx, 1] - py) + wn * db[idx]
             if cf.min() <= cb.min():
@@ -140,7 +188,43 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
                 fls.append(True)
                 px, py = ax[j], ay[j]
             free[j] = False
+            if has_c:
+                for b in succ[j]:
+                    need[b] -= 1
         return ids, fls
+
+    succ: list[list[int]] = [[] for _ in range(n)]
+    for b in range(n):
+        for a in preds[b]:
+            succ[a].append(b)
+
+    def rev_ok(ids, pos, t, k):
+        """reversing ids[t..k] keeps every precedence"""
+        for u in ids[t:k + 1]:
+            for a in preds[u]:
+                if t <= pos[a] <= k:
+                    return False
+        return True
+
+    def move_ok(ids, pos, t, L, g, rev):
+        """moving the block ids[t:t+L] in front of old index g keeps every precedence"""
+        blk = ids[t:t + L]
+        if rev and L > 1:
+            for u in blk:
+                for a in preds[u]:
+                    if t <= pos[a] < t + L:
+                        return False
+        if g < t:
+            for u in blk:
+                for a in preds[u]:
+                    if g <= pos[a] < t:
+                        return False
+        else:
+            for v in ids[t + L:g]:
+                for a in preds[v]:
+                    if t <= pos[a] < t + L:
+                        return False
+        return True
 
     nb = _neighbours(np.vstack([A, B]), n, cand)
 
@@ -176,6 +260,7 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
                 ex0, ey0 = entry(ids[t], fls[t])
                 head = hyp(ex0 - px, ey0 - py)
                 best = None
+                found = []
                 for j in cands:
                     k = pos[j]
                     if k <= t:
@@ -190,8 +275,13 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
                     nx0, ny0 = exit_(ids[k], fls[k])         # flipped last enters at its old exit
                     new += hyp(nx0 - px, ny0 - py)
                     delta = new - old + w * (ps[k + 1] - ps[t])
-                    if delta < -1e-7 and (best is None or delta < best[0]):
-                        best = (delta, k)
+                    if delta < -1e-7:
+                        found.append((delta, k))
+                if found:
+                    found.sort()
+                    if has_c:
+                        found = [c for c in found if rev_ok(ids, pos, t, c[1])]
+                    best = found[0] if found else None
                 if best is not None:
                     k = best[1]
                     ids[t:k + 1] = ids[t:k + 1][::-1]
@@ -222,6 +312,7 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
                         gain += hyp(post[0] - pre[0], post[1] - pre[1]) \
                             - hyp(post[0] - sb[0], post[1] - sb[1])
                     best = None
+                    found = []
                     gaps = set()
                     for j in set(nb[a]) | set(nb[b]):
                         q = pos[j]
@@ -240,8 +331,13 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
                             if gq is not None:
                                 add += hyp(gq[0] - ex[0], gq[1] - ex[1])
                             delta = add - base + gain + (w * flipd if rev else 0.0)
-                            if delta < -1e-7 and (best is None or delta < best[0]):
-                                best = (delta, g, rev)
+                            if delta < -1e-7:
+                                found.append((delta, g, rev))
+                    if found:
+                        found.sort()
+                        if has_c:
+                            found = [c for c in found if move_ok(ids, pos, t, L, c[1], c[2])]
+                        best = found[0] if found else None
                     if best is not None:
                         _, g, rev = best
                         bi = ids[t:t + L]
@@ -293,6 +389,8 @@ def _solve(sections, start, weight: float, passes: int, cand: int, kicks: int = 
             p1, p2, p3 = sorted(rng.choice(np.arange(1, n), size=3, replace=False))
             ti = ids[:p1] + ids[p2:p3] + ids[p1:p2] + ids[p3:]
             tf = fls[:p1] + fls[p2:p3] + fls[p1:p2] + fls[p3:]
+            if has_c and not feasible(ti, preds):
+                ti, tf = _repair(ti, tf, preds)
             ti, tf = improve(ti, tf)
             c = cost(ti, tf)
             if c < best_c - 1e-7:
@@ -314,7 +412,7 @@ def _d2(p, q):
 
 
 def plan(sections, start, *, weight: float = 10.0, passes: int | None = None, cand: int = 12,
-         kicks: int | None = None):
+         kicks: int | None = None, before=None):
     """Order ``sections`` from ``start``.
 
     ``sections`` is a sequence of ``(a, b, drop)``: the two end points in index
@@ -329,6 +427,10 @@ def plan(sections, start, *, weight: float = 10.0, passes: int | None = None, ca
     purely by travel - both are polished with the requested weight and the
     better one goes on to ``kicks`` deterministic double-bridge perturbations
     (fixed seed, so the same input always gives the same order).
+
+    ``before`` is an optional list of ``(a, b)`` pairs: section ``a`` must be
+    printed before section ``b`` (stacking order of overlapping elements).  The
+    pairs must not form a cycle.
     """
     n = len(sections)
     w = max(0.0, float(weight))
@@ -337,4 +439,4 @@ def plan(sections, start, *, weight: float = 10.0, passes: int | None = None, ca
     if kicks is None:
         kicks = 20 if n <= 150 else 10 if n <= 400 else 0
     return _solve(sections, start, w, passes, cand, kicks,
-                  starts=[w, 0.0] if w > 0 else [0.0])
+                  starts=[w, 0.0] if w > 0 else [0.0], before=before)

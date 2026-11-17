@@ -41,20 +41,33 @@ G-code.
 - **Elements**: contour, patterns (lines, grid, waves, zigzag, curls, circles, spiral, dots,
   diamonds), freehand drawing, images (PNG/JPG, k-means colour separation), text and SVG.
   Move, scale, rotate, recolour; crop and tile images and text.
-- **Order is the stack** – the element list is the print order. The top entry is printed last and
-  therefore lies on top. Every element is placed on the best available support automatically,
-  including partial overlaps: `z = max(surface + offset, line below + offset)`.
+- **Order is the stack** – the element list is the stacking order. Where two elements overlap, the
+  lower one is printed first; everything that does not overlap is free, so all elements of a colour
+  are planned as one chain and a colour only comes back when an overlap needs it. Every line is
+  placed on what is really below it at print time, including partial overlaps, crossings within an
+  element and loops of a single stroke: `z = max(surface + offset, line below + bead)`.
 - **Uphill printing** – each section between two travels is printed so the nozzle climbs the
   surface instead of pushing material down. Strokes are split at crests (zigzag hysteresis, 3-point
   median against layer steps); threshold `0` splits every wave. Stats show the uphill share, the
-  number of cuts and the descent that is left.
+  number of cuts and the descent that is left. Closed outlines start at their lowest point, so the
+  cuts sit on real turns; a short, steep stub at a stroke end is printed on its own, uphill.
 - **Short travels** – all sections of a colour are ordered as one chain so that the nozzle leaves a
   section where the next one starts. Every gap is a retract, a hop and a prime (that is where the
   oozing shows), so a section may also be printed the other way round when that saves more travel
   than the downhill costs: `dir_travel_weight` says how many millimetres of travel one millimetre of
   downhill is worth (`0` = shortest ways only, default `10`, `20` ≈ uphill only). The order comes from
-  nearest-neighbour seeds, 2-opt/Or-opt and a few double-bridge kicks with a fixed seed, so the same
-  design always gives the same G-code.
+  nearest-neighbour seeds, 2-opt/Or-opt and a few double-bridge kicks with a fixed seed (groups of
+  up to 9 sections are solved exactly), so the same design always gives the same G-code.
+- **Less oozing at the gaps** – a retract wipes back along the line just printed (Bambu's
+  `wipe_distance`, retracting while it moves), optional coasting stops the feed shortly before a
+  line that ends in a retract, travels up to `short_travel` stay down without a retract, and the hop
+  over already printed lines is only `hop_bead`.
+- **Speed that fits the bead** – each segment is capped by the filament's volumetric limit at the
+  real gap under the nozzle (a thick bead on a slope needs more material) and slows down in tight
+  curves (`curve_radius`, `curve_min`).
+- **Warp allowance** – a warped part sits higher than the G-code says. `warp_ends` lifts the nozzle
+  towards the ends of each part (square of the distance from the middle along its long axis),
+  `warp_edge` right at the outline; measure the gap after a print and enter it.
 - **Nozzle follows the surface** – the height is the maximum of the surface under the whole nozzle
   disc plus the offset (`z_offset` can be negative). Crossings are lifted over lines already
   printed, the flow can adapt to the real gap under the nozzle.
@@ -65,7 +78,11 @@ G-code.
   head envelopes from PancakeSlicer (nozzle cone, heater sock, ducts, gantry). Hit boxes turn red
   in the x-ray view. The A1 mini presets include a variant **without the part cooling fan**.
 - **3D preview with playback** – surface, original toolpaths, generated G-code, travels, cuts,
-  collision markers, x-ray print head and the G-code view follow the slider.
+  collision markers, x-ray print head and the G-code view follow the slider. *Downhill* colours the
+  lines red that still run downhill, *Retracts* shows every retract (dots) and the wipe/coast moves.
+- **Key figures per export** – every export and every send appends its numbers (travel, retracts,
+  uphill share, wipe, coast, time, filament, parameters) to `data/<id>/exports.jsonl`, so a print
+  result can be matched with the settings that produced it.
 - **Send to the printer, AMS only** – uploads the merged `.gcode.3mf` over FTPS and starts it over
   MQTT. Every filament used by the object *and* by the non-planar layer is mapped to an AMS tray
   (colour + material first, a free tray after that). If a filament cannot be mapped or the AMS
@@ -133,9 +150,11 @@ maximum, so the nozzle cannot clip a step.
 **Decoration layer.** Every element becomes polylines in bed coordinates. They are clipped to the
 mask (minus the element margin), optionally smoothed and simplified, then resampled at `step`.
 `z` is the maximum of the surface under the nozzle disc plus `z_offset`, raised over previously
-printed non-planar lines, with ramps across crossings. Extrusion is derived from the line width and
-the real gap below the nozzle; speed is capped by the filament's maximum volumetric speed.
-Travels lift over the highest point along their path.
+printed non-planar lines (sampled right before each line is printed) and over earlier parts of the
+same line where it crosses itself, with ramps across crossings. Extrusion is derived from the line
+width and the real gap below the nozzle; speed is capped per segment by the filament's maximum
+volumetric speed at that gap and reduced in tight curves. Travels lift `hop` over the highest
+surface point and `hop_bead` over the highest printed line along their path; short ones stay down.
 
 **Uphill split.** For each section the surface height along the path is examined. A local crest
 that runs more than the split threshold against the print direction cuts the section; both halves
@@ -143,8 +162,11 @@ are printed from their lower end. A 3-point median ignores single layer steps, `
 cuts away from stroke ends and `dir_cap` optionally limits the number of parts. Every cut is
 written to the G-code as `; npg section …`, drawn as a dot in the 2D view and as a cross in 3D.
 
-**Order.** Sections of one stroke stay next to each other, and the sections of the whole colour are
-chained by a nearest-neighbour pass plus 2-opt and or-opt (`npg/tour.py`). The cost of a chain is
+**Order.** Overlapping sections of different elements get a precedence (lower element first, within
+line width + nozzle radius). Colour batches are formed from that: all groups of a colour whose
+predecessors are done are printed together, the colour order follows the least purge. Inside a
+batch the sections are chained by a nearest-neighbour pass plus 2-opt and or-opt (`npg/tour.py`),
+every move checked against the precedences. The cost of a chain is
 `travel + weight × downhill`, so a long way round is only taken when it buys less descent than
 `dir_travel_weight` allows. The resulting travel is shown as *travel* in the stats bar, the cuts as
 `; npg section …` in the G-code.
@@ -191,6 +213,7 @@ GET  /api/job/{id}?plate=2                    metadata, filaments, defaults
 GET  /api/job/{id}/grid?plate=2&sigma=&tip=   height map + mask (binary)
 POST /api/job/{id}/generate?plate=2           {params, paths, head} -> stats, moves, gcode
 GET  /api/job/{id}/export?plate=2&fmt=3mf     merged download
+GET  /api/job/{id}/exports?plate=2            key figures of earlier exports / sends
 POST /api/job/{id}/send?plate=2               {start} -> FTPS upload (+ MQTT start)
 GET  /api/printer/status                      state, progress, AMS trays
 ```
@@ -200,7 +223,9 @@ The `X-NPG-Lang: de|en` header selects the language of backend messages.
 ## Limits
 
 - One decoration pass on top of a normal print – not a general non-planar slicer.
-- Self-crossings inside a single stroke (loops) are not lifted; crossings *between* strokes are.
+- Stacking samples the printed lines at the line centre; two lines that overlap by less than
+  ~0.4 line width are not lifted onto each other.
+- The warp allowance is a model (a bow along the long axis, a ramp at the edge), not a measurement.
 - On slopes the flat nozzle sits higher than the tip by `nozzle radius × tan(angle)`; `z_offset`
   and the gap flow compensate for that. Very steep areas are excluded by the angle limit.
 - The head envelopes are simplified boxes; the collision check is a warning, not a guarantee.
@@ -213,7 +238,8 @@ The `X-NPG-Lang: de|en` header selects the language of backend messages.
 .venv/bin/python -m pytest -q
 ```
 
-113 tests cover the G-code parser, height map, path/pattern generation, uphill splitting, the
+137 tests cover the G-code parser, height map, path/pattern generation, uphill splitting, the
+ordering with precedences, wipe/coasting, self-crossings, curve speed, warp allowance, the
 collision check, filament changes (rendered against a real Bambu tool-change block), the AMS
 mapping and the HTTP API (including send and variants). The UI has no test runner; a JS syntax
 check and manual browser runs are used instead.

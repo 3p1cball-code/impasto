@@ -123,7 +123,7 @@ class _Level:
 # ------------------------------------------------------------------ main check
 
 def _samples(moves: np.ndarray, step: float):
-    sel = np.nonzero(moves[:, 0] < 1.5)[0]           # 0 = extrusion, 1 = travel
+    sel = np.nonzero(moves[:, 0] != 2)[0]            # 0 extrusion, 1 travel, 3 wipe/coast (2 = change)
     m = moves[sel]
     L = np.hypot(m[:, 5] - m[:, 2], m[:, 6] - m[:, 3])
     n = np.maximum(1, np.ceil(L / step).astype(np.int64)) + 1

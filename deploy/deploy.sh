@@ -17,6 +17,7 @@ ssh "$HOST" 'set -e; cd ~/impasto
   .venv/bin/pip install -q -r requirements.txt
   mkdir -p ~/.config/systemd/user data
   cp deploy/impasto.service ~/.config/systemd/user/
+  rm -rf npg        # leftover from the old package name (rsync keeps __pycache__)
   # drop the unit of the old name (it held the same port)
   systemctl --user disable --now npgcoder.service 2>/dev/null || true
   rm -f ~/.config/systemd/user/npgcoder.service

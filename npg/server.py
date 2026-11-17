@@ -259,6 +259,7 @@ def job_generate(fid: str, plate: int = 1, body: dict = Body(...)):
         "flags": base64.b64encode((res.flags if res.flags is not None
                                    else np.zeros(len(res.moves), np.uint8)).astype(np.uint8).tobytes()).decode(),
         "retracts": np.round(res.retracts, 3).tolist() if res.retracts is not None else [],
+        "touches": np.round(res.touches, 3).tolist() if res.touches is not None else [],
         "lines": res.gcode.count("\n"),
     }
 
@@ -312,7 +313,7 @@ def job_export(fid: str, plate: int = 1, fmt: str = "3mf"):
 
 EXPORT_KEYS = ("toolchanges", "purge_mm3", "time_s", "max_z", "stacked_mm", "elements", "travel_mm",
                "retracts", "short_travels", "wipe_mm", "coast_mm", "self_lift_mm", "slowed_mm",
-               "batches", "precedences", "length_mm", "filament_mm", "volume_mm3")
+               "batches", "precedences", "touches", "touch_skipped", "length_mm", "filament_mm", "volume_mm3")
 
 
 def export_record(s, name: str, kind: str) -> dict:

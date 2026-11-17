@@ -68,6 +68,18 @@ G-code.
 - **Warp allowance** – a warped part sits higher than the G-code says. `warp_ends` lifts the nozzle
   towards the ends of each part (square of the distance from the middle along its long axis),
   `warp_edge` right at the outline; measure the gap after a print and enter it.
+- **Touch-off (experimental)** – instead of guessing the warp, the nozzle touches the real part.
+  The A1/A1 mini sense nozzle contact with the eddy-current force sensor in the toolhead; Bambu's
+  own start G-code taps the plate with `G380 S3` at 140 °C. The layer is printed in cells
+  (`probe_region`, default 40 mm), each cell starts with a guarded `G380 S3` move down to a flat,
+  solid spot near its middle, and `G92 Z<planned surface>` re-zeroes Z there – every later Z of the
+  cell is then relative to the real part. The printer cannot report measured heights over LAN, so
+  this works without reading anything back. Optional cool-down for the touch (`probe_temp`, default
+  140 °C, `M109` waits for cooling on Bambu firmware) with re-heating at the purge chute. Off by
+  default; test it with a hand on the printer.
+- **Slope compensation** – on a slope the flat nozzle face touches its highest point, so the line
+  centre gets a thicker bead (tip radius × tan angle). `slope_comp` takes a share of that back while
+  the face keeps 0.03 mm clearance; the flow follows the smaller gap.
 - **Nozzle follows the surface** – the height is the maximum of the surface under the whole nozzle
   disc plus the offset (`z_offset` can be negative). Crossings are lifted over lines already
   printed, the flow can adapt to the real gap under the nozzle.
@@ -226,6 +238,9 @@ The `X-NPG-Lang: de|en` header selects the language of backend messages.
 - Stacking samples the printed lines at the line centre; two lines that overlap by less than
   ~0.4 line width are not lifted onto each other.
 - The warp allowance is a model (a bow along the long axis, a ramp at the edge), not a measurement.
+- Touch-off corrects one offset per cell (piecewise constant) and relies on undocumented firmware
+  behaviour (`G380 S3` stops on contact, `G92 Z` re-zeroes); if a touch finds nothing within
+  `probe_depth`, Z is set anyway and the cell sits up to that much too low.
 - On slopes the flat nozzle sits higher than the tip by `nozzle radius × tan(angle)`; `z_offset`
   and the gap flow compensate for that. Very steep areas are excluded by the angle limit.
 - The head envelopes are simplified boxes; the collision check is a warning, not a guarantee.
@@ -238,8 +253,9 @@ The `X-NPG-Lang: de|en` header selects the language of backend messages.
 .venv/bin/python -m pytest -q
 ```
 
-137 tests cover the G-code parser, height map, path/pattern generation, uphill splitting, the
-ordering with precedences, wipe/coasting, self-crossings, curve speed, warp allowance, the
+140 tests cover the G-code parser, height map, path/pattern generation, uphill splitting, the
+ordering with precedences, wipe/coasting, self-crossings, curve speed, warp allowance, touch-off,
+slope compensation, the
 collision check, filament changes (rendered against a real Bambu tool-change block), the AMS
 mapping and the HTTP API (including send and variants). The UI has no test runner; a JS syntax
 check and manual browser runs are used instead.

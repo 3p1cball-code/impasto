@@ -214,6 +214,7 @@ export class View3D {
   setGcode(moves, lw, travelOn, flags = null, retracts = null, opts = {}) {
     this.clear("gcode"); this.clear("travel"); this.clear("marker"); this.clear("retr");
     this.moves = moves; this.flags = flags; this.retracts = retracts; this.lw = lw;
+    if (opts.touches !== undefined) this.touches = opts.touches;
     this.downOn = opts.down ?? this.downOn ?? false;
     const n = moves.length / 9;
     const ep = [], ec = [], tp = [], wp = [];
@@ -250,6 +251,13 @@ export class View3D {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(retracts.flat()), 3));
       this.groups.retr.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xf2a33a, size: 4, sizeAttenuation: false, depthTest: false })));
+    }
+    if (this.touches?.length) {          // touch-off points: a vertical tick down to the surface
+      const pos = [];
+      for (const [x, y, z] of this.touches) pos.push(x, y, z, x, y, z + 3, x - 1, y, z, x + 1, y, z, x, y - 1, z, x, y + 1, z);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      this.groups.retr.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x7dff9a, depthTest: false })));
     }
     if (opts.retr != null) this.groups.retr.visible = opts.retr;
     if (ep.length) {

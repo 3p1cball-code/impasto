@@ -306,3 +306,49 @@ def test_same_design_same_gcode(setup):
     a = generate.generate(job, tp, g, design(), generate.Params())
     b = generate.generate(job, tp, g, design(), generate.Params())
     assert a.gcode == b.gcode
+
+
+def test_touch_off_rezeroes_on_the_planned_surface(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[40, 55], [70, 55]]}, {"slot": 0, "pts": [[120, 55], [150, 55]]}]
+    res = generate.generate(job, tp, g, paths, generate.Params(probe=True, probe_region=40))
+    lines = res.gcode.split("\n")
+    touch = [i for i, l in enumerate(lines) if l.startswith("G380 S3")]
+    g92 = [l for l in lines if l.startswith("G92 Z")]
+    assert res.stats["touches"] == len(touch) == len(g92) == len(res.touches) == 2
+    for i in touch:                       # relative, guarded move, back to absolute right after
+        assert lines[i - 1] == "G91" and lines[i + 1] == "G90"
+        assert lines[i + 3].startswith("G92 Z")
+    # G92 sets exactly the planned surface (ZN) of the touch spot
+    for (x, y, z), l in zip(res.touches, g92):
+        zn = surface.sample(g.ZN, g, np.array([x]), np.array([y]), mode="nearest")[0]
+        assert abs(float(l.split("Z")[1].split()[0]) - zn) < 1e-3
+        assert abs(z - zn) < 1e-3
+    # cooled down for the touch, heated up again before printing
+    assert "M109 S140" in res.gcode
+    t = int(job.floats("nozzle_temperature")[0])
+    assert res.gcode.count(f"M109 S{t}") >= 2
+
+
+def test_single_touch_and_hot_touch(setup):
+    job, tp, g = setup
+    paths = [{"slot": 0, "pts": [[40, 55], [70, 55]]}, {"slot": 0, "pts": [[120, 55], [150, 55]]}]
+    res = generate.generate(job, tp, g, paths, generate.Params(probe=True, probe_region=0, probe_temp=0))
+    assert res.stats["touches"] == 1
+    assert "M109 S140" not in res.gcode
+    off = generate.generate(job, tp, g, paths, generate.Params())
+    assert "G380" not in off.gcode and "G92 Z" not in off.gcode
+
+
+def test_slope_compensation_lowers_but_keeps_clear(setup):
+    job, tp, g = setup
+    paths = design()
+    a = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False, stack=False, ramp=0))
+    b = generate.generate(job, tp, g, paths, generate.Params(dir_opt=False, stack=False, ramp=0, slope_comp=1.0))
+    ea, eb = a.moves[a.moves[:, 0] == 0], b.moves[b.moves[:, 0] == 0]
+    assert len(ea) == len(eb)
+    d = ea[:, 7] - eb[:, 7]
+    assert d.max() > 0.02 and d.min() >= -1e-4             # lower on slopes, never higher
+    zs = surface.sample_max(g.ZN, g, eb[:, 5], eb[:, 6])
+    ok = np.isfinite(zs)
+    assert (eb[ok, 7] - zs[ok]).min() >= generate.SLOPE_MIN_CLEAR - 1e-3

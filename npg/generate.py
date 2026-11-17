@@ -58,6 +58,19 @@ class Params:
                                   # along the long axis); 0 = off
     warp_edge: float = 0.0        # mm – extra lift right at the part's outline (warped edges)
     warp_edge_width: float = 3.0  # mm – the edge lift fades out over this distance inwards
+    slope_comp: float = 0.0       # 0..1 – on slopes the flat nozzle face sits higher than the
+                                  # line centre (tip radius x tan angle); take this share of that
+                                  # extra gap back (the face keeps >= 0.03 mm clearance); 0 = off
+    # touch-off (experimental): the nozzle touches the real part (G380 S3) and the
+    # coordinate system is re-zeroed there (G92) – corrects warp and Z errors locally
+    probe: bool = False
+    probe_region: float = 40.0    # mm – the layer is printed in cells of this size, one touch per
+                                  # cell; 0 = a single touch for the whole layer
+    probe_temp: float = 140.0     # °C nozzle temperature for touching (Bambu touches at 140), 0 = as is
+    probe_depth: float = 0.5      # mm – how far below the planned surface the touch may go
+    probe_clear: float = 1.5      # mm – the touch starts at least this far above the planned
+                                  # surface (the whole descent is a guarded G380 move)
+    probe_speed: float = 5.0      # mm/s touch speed
     # old keys dir_min_len / dir_max_parts / dir_smooth are ignored on purpose:
     # their old defaults (1.5 / 6 / 0.8) hid real dips and left downhill lines.
 
@@ -109,6 +122,7 @@ class Result:
     end_slot: int
     flags: np.ndarray | None = None      # (N,) uint8 per move: FLAG_DOWN / FLAG_COAST / FLAG_WIPE
     retracts: np.ndarray | None = None   # (R, 3) float32 where the nozzle retracted
+    touches: np.ndarray | None = None    # (T, 3) float32 touch-off points (x, y, planned surface z)
 
 
 class Writer:
@@ -150,10 +164,13 @@ class Writer:
         self.x, self.y, self.z = nx, ny, nz
 
 
+SLOPE_MIN_CLEAR = 0.03   # mm the nozzle face keeps above the surface with slope_comp
+
 # move flags (Result.flags)
 FLAG_DOWN = 1        # extrusion that runs downhill on the surface
 FLAG_COAST = 2       # coasting: along the line without extrusion
 FLAG_WIPE = 4        # wipe while retracting
+FLAG_TOUCH = 8       # touch-off move (G380 down to the part, G92)
 
 
 def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params, *,
@@ -258,7 +275,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
              "dir_down_max": 0.0, "stacked_mm": 0.0, "elements": len({i for (i, _) in groups}),
              "travel_plan_mm": 0.0, "down_plan_mm": 0.0, "travel_mm": 0.0, "retracts": 0,
              "short_travels": 0, "wipe_mm": 0.0, "coast_mm": 0.0, "self_lift_mm": 0.0,
-             "slowed_mm": 0.0, "batches": 0, "precedences": 0}
+             "slowed_mm": 0.0, "batches": 0, "precedences": 0, "touches": 0, "touch_skipped": 0}
 
     W.emit("; ===== NON-PLANAR LAYER (Non-Planar Gcoder) START =====")
     W.emit("; CHANGE_LAYER")
@@ -273,6 +290,8 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     W.emit("G90")
     W.emit("M83")
     W.emit(f"M204 S{p.accel}")
+    if p.probe:
+        W.emit("; npg: touch-off is on - Z is re-zeroed on the part (G380 S3 + G92) at every touch")
 
     retracted = retract_len.get(cur_slot, 0.8)   # Bambu wipes+retracts at the end of the last layer
     safe_z = zn_max + max(p.hop, 0.4) + 0.4
@@ -281,6 +300,15 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     W.x, W.y = tp.end_pos[0], tp.end_pos[1]
     stats["time_s"] += abs(safe_z - tp.end_pos[2]) / 20.0
     last_line = None        # (P, z) of the last extruded line, for the wipe
+    last_touch = None       # (x, y) of the last touch-off
+    touches: list[tuple] = []
+    if p.probe:
+        valid_ = np.isfinite(g.H)
+        edge_mm = ndimage.distance_transform_edt(valid_) * g.res
+        S_ = g.S if g.S is not None else np.zeros_like(g.H)
+        # on a slope the flat nozzle face touches its highest point first – exactly what
+        # ZN (the disc maximum) describes, so moderate slopes are fine to touch on
+        flat_ok = valid_ & (edge_mm >= 2.0) & (S_ <= 30.0) & np.isfinite(g.ZN)
 
     def line_max(x0, y0, x1, y1):
         """highest surface (ZN) and highest printed bead (HNP) along a travel"""
@@ -355,6 +383,77 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     def item_points(it):
         return it["P"][it["i0"]:it["i1"] + 1]
 
+    def touch_spot(x, y, r=3.0):
+        """flat, solid spot near (x, y) without printed lines around: (x, y, ZN) or None"""
+        cx_, cy_ = g.to_cell(np.array([x]), np.array([y]))
+        cx_, cy_ = int(round(float(cx_[0]))), int(round(float(cy_[0])))
+        k = int(math.ceil(r / g.res))
+        x0, x1 = max(0, cx_ - k), min(g.nx, cx_ + k + 1)
+        y0, y1 = max(0, cy_ - k), min(g.ny, cy_ + k + 1)
+        if x0 >= x1 or y0 >= y1:
+            return None
+        ok = flat_ok[y0:y1, x0:x1].copy()
+        if p.stack:     # keep 1 mm away from printed non-planar lines (they are not in ZN)
+            pad = int(math.ceil(1.0 / g.res))
+            ya, yb, xa, xb = max(0, y0 - pad), min(g.ny, y1 + pad), max(0, x0 - pad), min(g.nx, x1 + pad)
+            hn = ndimage.maximum_filter(HNP[ya:yb, xa:xb], size=2 * pad + 1, mode="constant", cval=-np.inf)
+            ok &= ~np.isfinite(hn[y0 - ya:y1 - ya, x0 - xa:x1 - xa])
+        jj, ii = np.nonzero(ok)
+        if not len(ii):
+            return None
+        xs = g.x0 + (ii + x0) * g.res
+        ys = g.y0 + (jj + y0) * g.res
+        d = np.hypot(xs - x, ys - y)
+        m = int(np.argmin(d))
+        if d[m] > r:
+            return None
+        return float(xs[m]), float(ys[m]), float(g.ZN[jj[m] + y0, ii[m] + x0])
+
+    def touch_off(slot_, x, y, zt, print_temp):
+        """touch the real surface and re-zero Z there (G380 S3 + G92)"""
+        nonlocal last_touch, retracted
+        if retracted <= 0:
+            retract(slot_)
+        cx, cy = W.x, W.y
+        zs_, zbd = line_max(cx, cy, x, y)
+        tz = max(zs_ + p.hop, zbd + p.hop_bead, zt + p.probe_clear, W.z or 0.0)
+        W.emit(f"; npg touch-off {stats['touches'] + 1} at X{x:.2f} Y{y:.2f}, planned surface Z{zt:.3f}")
+        W.move(z=tz, f=1200, kind=1, slot=slot_)
+        W.move(x=x, y=y, f=p.travel_speed * 60, kind=1, slot=slot_)
+        stats["time_s"] += math.hypot(x - cx, y - cy) / p.travel_speed
+        cool = 0 < p.probe_temp < print_temp - 1
+        if cool:
+            W.emit(f"M104 S{int(p.probe_temp)}")
+            W.emit(f"M109 S{int(p.probe_temp)} ; Bambu waits for cooling as well")
+            stats["time_s"] += 45.0
+        # the whole way down is a guarded move: a part warped higher than expected
+        # stops the nozzle instead of being run into
+        z_from = W.z
+        W.emit("G91")
+        W.emit(f"G380 S3 Z-{_f(z_from - zt + p.probe_depth)} F{int(p.probe_speed * 60)} ; touch")
+        W.emit("G90")
+        W.emit("M400")
+        W.emit(f"G92 Z{_f(zt)} ; the real surface here is the planned one")
+        W.moves.append((1, slot_, x, y, z_from, x, y, zt, len(W.lines) - 1))
+        W.flags.append(FLAG_TOUCH)
+        W.z = zt
+        W.f = None
+        stats["time_s"] += (z_from - zt + p.probe_depth) / max(p.probe_speed, 0.5) + 1.0
+        W.move(z=zt + max(p.hop, 1.0), f=600, kind=1, slot=slot_)
+        if cool:
+            # heat up off the part: what oozes while heating goes into the chute
+            W.move(z=max(W.z, zn_max + max(p.hop, 1.0)), f=1200, kind=1, slot=slot_)
+            # the same way into the chute as Bambu's own filament change: Y90, then slowly X-13.5
+            W.move(y=90.0, f=9000, kind=1, slot=slot_)
+            W.move(x=-13.5, f=3000, kind=1, slot=slot_)
+            W.emit(f"M109 S{int(print_temp)}")
+            W.move(x=0.0, f=18000, kind=1, slot=slot_)     # wipe and shake, like the template
+            W.move(x=-13.5, f=3000, kind=1, slot=slot_)
+            stats["time_s"] += 25.0 + 2 * abs(x + 13.5) / p.travel_speed
+        touches.append((x, y, zt))
+        stats["touches"] += 1
+        last_touch = (x, y)
+
     # ---- plan every section of every group -----------------------------------
     gkeys = sorted(groups)
     items: list[dict] = []
@@ -391,6 +490,15 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
                         P = np.vstack([ring[r0:], ring[:r0], ring[r0:r0 + 1]])
                         zb = np.r_[zr[r0:], zr[:r0], zr[r0:r0 + 1]]
                 ds = np.r_[0.0, np.hypot(*np.diff(P, axis=0).T)]
+                comp = np.zeros(len(P))
+                if p.slope_comp > 0 and off > SLOPE_MIN_CLEAR:
+                    # nozzle face on a slope: its lowest point (ZN) is above the line centre;
+                    # lower the nozzle by a share of that, keeping the face clear of the
+                    # surface. Only the nozzle height changes – direction and the downhill
+                    # measure keep looking at the surface.
+                    hc = surface.sample(g.H, g, P[:, 0], P[:, 1])
+                    extra = np.where(np.isfinite(hc), np.maximum(zb - off - hc, 0.0), 0.0)
+                    comp = np.minimum(p.slope_comp * extra, off - SLOPE_MIN_CLEAR)
                 dz0 = np.diff(zb)
                 stats["dir_before_mm"] += float(ds[1:][dz0 < -1e-6].sum())
                 # ---- uphill first: split the stroke where the surface turns ----
@@ -409,7 +517,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
                     dz = np.diff(zi)
                     desc_f = float(di[1:][dz < -1e-6].sum())
                     desc_b = float(di[1:][dz > 1e-6].sum())
-                    items.append({"P": P, "zb": zb, "ds": ds, "key": key, "idx": idx, "slot": slot,
+                    items.append({"P": P, "zb": zb, "comp": comp, "ds": ds, "key": key, "idx": idx, "slot": slot,
                                   "i0": i0, "i1": i1, "k": k, "n": len(secs),
                                   "down_f": desc_f, "down_b": desc_b, "ring": ring,
                                   "cut": (float(P[i0, 0]), float(P[i0, 1]), float(zb[i0]))})
@@ -521,9 +629,17 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
         #      other way round when that saves more travel than the downhill
         #      costs (see npg.tour); overlapping sections keep their stacking order
         plan_start = (W.x or 0.0), (W.y or 0.0)
-        order, flips, plan_info = tour.plan(
-            [(it["P"][it["i0"]], it["P"][it["i1"]], it["down_b"] - it["down_f"]) for it in bitems],
-            plan_start, weight=(p.dir_travel_weight if p.dir_opt else 0.0), before=before)
+        secs_ = [(it["P"][it["i0"]], it["P"][it["i1"]], it["down_b"] - it["down_f"]) for it in bitems]
+        wt = p.dir_travel_weight if p.dir_opt else 0.0
+        touch_at: dict[int, tuple] = {}         # position in the order -> cell centre to touch near
+        if p.probe and p.probe_region > 0 and len(bitems) > 1:
+            # every touch costs a cool-down: print cell by cell, one touch per cell
+            order, flips, plan_info, touch_at = _plan_cells(bitems, secs_, before, plan_start, wt,
+                                                            p.probe_region)
+        else:
+            order, flips, plan_info = tour.plan(secs_, plan_start, weight=wt, before=before)
+            if p.probe and order:
+                touch_at = {0: None}
         stats["travel_plan_mm"] += plan_info["travel"]
         stats["down_plan_mm"] += plan_info["downhill"]
 
@@ -625,9 +741,9 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
             it = bitems[j]
             P, zb = it["P"], it["zb"]
             sl = slice(it["i0"], it["i1"] + 1)
-            Pp, zp = P[sl], zb[sl].copy()
+            Pp, zp, cp = P[sl], zb[sl].copy(), it["comp"][sl]
             if flip:
-                Pp, zp = Pp[::-1], zp[::-1]
+                Pp, zp, cp = Pp[::-1], zp[::-1], cp[::-1]
             if it["ring"] and len(Pp) > 3:
                 # rotate the ring: enter where the nozzle is, leave towards the next line
                 px_, py_ = (W.x if W.x is not None else Pp[0, 0]), (W.y if W.y is not None else Pp[0, 1])
@@ -638,8 +754,10 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
                     ringp = Pp[:-1]
                     Pp = np.vstack([ringp[ri:], ringp[:ri], ringp[ri:ri + 1]])
                     zp = np.r_[zp[:-1][ri:], zp[:-1][:ri], zp[ri:ri + 1]]
+                    cp = np.r_[cp[:-1][ri:], cp[:-1][:ri], cp[ri:ri + 1]]
             dsp = np.r_[0.0, np.hypot(*np.diff(Pp, axis=0).T)]
             z_dir = zp.copy()        # surface only: the uphill metric ignores stacking and ramps
+            zp = zp - cp             # slope compensation: nozzle height only
             # what is printed below this line right now (earlier sections and elements)
             if p.stack:
                 hp = surface.sample(HNP, g, Pp[:, 0], Pp[:, 1], mode="nearest")
@@ -697,6 +815,22 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
                 if it["k"] > 0:
                     cx_, cy_, cz_ = it["cut"]
                     note += f" - cut at X{cx_:.2f} Y{cy_:.2f} Z{cz_:.2f}"
+            ctr = touch_at.get(pos)
+            near = (last_touch is not None and ctr is not None and
+                    math.hypot(ctr[0] - last_touch[0], ctr[1] - last_touch[1]) < 0.35 * p.probe_region)
+            if p.probe and pos in touch_at and (p.probe_region > 0 or last_touch is None) and not near:
+                spot = None
+                if ctr is not None:      # near the middle of the cell: the re-zero fits it best
+                    spot = touch_spot(ctr[0], ctr[1], r=max(3.0, p.probe_region / 2))
+                if spot is None:
+                    spot = touch_spot(float(Pp[0, 0]), float(Pp[0, 1]))
+                if spot is None:
+                    spot = touch_spot(float(Pp[0, 0]), float(Pp[0, 1]), r=6.0)
+                if spot is not None:
+                    touch_off(slot, spot[0], spot[1], spot[2],
+                              int(temps[slot]) if slot < len(temps) else 200)
+                else:
+                    stats["touch_skipped"] += 1
             emit_path(Pp, zp, dsp, gap, vseg, note, dirz=z_dir, coast=coast)
             if it["k"] > 0:
                 cx_, cy_, cz_ = it["cut"]
@@ -731,7 +865,58 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
     fl = np.asarray(W.flags, dtype=np.uint8)
     rt = np.asarray(W.retracts, dtype=np.float32).reshape(-1, 3)
     return Result(gcode="\n".join(W.lines) + "\n", moves=mv, stats=stats, max_z=end_z, end_slot=cur_slot,
-                  flags=fl, retracts=rt)
+                  flags=fl, retracts=rt, touches=np.asarray(touches, dtype=np.float32).reshape(-1, 3))
+
+
+def _plan_cells(bitems, secs, before, start, weight, size):
+    """order sections cell by cell (square cells of ``size`` mm): cells are
+    visited nearest-first as the stacking precedences allow (cells that depend
+    on each other both ways are merged), the sections inside a cell are ordered
+    by :func:`npg.tour.plan`.  Returns order, flips, info and {position: cell
+    centre} where a new cell starts."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    n = len(bitems)
+    cen = np.array([it["P"][it["i0"]:it["i1"] + 1].mean(axis=0) for it in bitems])
+    keys = [tuple(k) for k in np.floor(cen / size).astype(np.int64).tolist()]
+    uk = sorted(set(keys))
+    cid = np.array([uk.index(k) for k in keys])
+    m = len(uk)
+    ea = [cid[a] for a, b in before if cid[a] != cid[b]]
+    eb = [cid[b] for a, b in before if cid[a] != cid[b]]
+    if ea:
+        G = coo_matrix((np.ones(len(ea)), (ea, eb)), shape=(m, m))
+        _, comp = connected_components(G, directed=True, connection="strong")
+    else:
+        comp = np.arange(m)
+    grp = comp[cid]                                   # merged cell of every section
+    ng = int(grp.max()) + 1
+    gpred = [set() for _ in range(ng)]
+    for a, b in before:
+        if grp[a] != grp[b]:
+            gpred[grp[b]].add(int(grp[a]))
+    gcen = np.array([cen[grp == q].mean(axis=0) for q in range(ng)])
+    order, flips, touch_at = [], [], {}
+    info = {"travel": 0.0, "downhill": 0.0, "cost": 0.0}
+    done: set = set()
+    px, py = float(start[0]), float(start[1])
+    while len(done) < ng:
+        cand = [q for q in range(ng) if q not in done and gpred[q] <= done]
+        q = min(cand, key=lambda c: (math.hypot(gcen[c, 0] - px, gcen[c, 1] - py), c))
+        idx = [j for j in range(n) if grp[j] == q]
+        loc = {j: t for t, j in enumerate(idx)}
+        bb = [(loc[a], loc[b]) for a, b in before if a in loc and b in loc]
+        o, f, inf = tour.plan([secs[j] for j in idx], (px, py), weight=weight, before=bb)
+        touch_at[len(order)] = (float(gcen[q, 0]), float(gcen[q, 1]))
+        order += [idx[k] for k in o]
+        flips += f
+        for k in ("travel", "downhill", "cost"):
+            info[k] += inf[k]
+        last = idx[o[-1]]
+        ex = secs[last][0] if f[-1] else secs[last][1]
+        px, py = float(ex[0]), float(ex[1])
+        done.add(q)
+    return order, flips, info, touch_at
 
 
 def warp_lift(g: Grid, ends: float, edge: float, width: float):

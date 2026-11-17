@@ -42,12 +42,19 @@ const PARAM_UI = [
   ["warp_ends", "param.warpEnds", 0, 2, 0.05, "mm", 1, false, "tip.param.warp_ends"],
   ["warp_edge", "param.warpEdge", 0, 1, 0.05, "mm", 1, false, "tip.param.warp_edge"],
   ["warp_edge_width", "param.warpEdgeWidth", 0.5, 20, 0.5, "mm", 1, false, "tip.param.warp_edge_width"],
+  ["slope_comp", "param.slopeComp", 0, 1, 0.05, "%", 100, false, "tip.param.slope_comp"],
+  ["probe_region", "param.probeRegion", 0, 120, 5, "mm", 1, false, "tip.param.probe_region"],
+  ["probe_temp", "param.probeTemp", 0, 200, 5, "°C", 1, false, "tip.param.probe_temp"],
+  ["probe_depth", "param.probeDepth", 0.1, 2, 0.05, "mm", 1, false, "tip.param.probe_depth"],
+  ["probe_clear", "param.probeClear", 0.5, 5, 0.1, "mm", 1, false, "tip.param.probe_clear"],
+  ["probe_speed", "param.probeSpeed", 1, 20, 1, "mm/s", 1, false, "tip.param.probe_speed"],
 ];
 const PARAM_BOOL = [
   ["dir_opt", "param.dirOpt", "tip.param.dir_opt"],
   ["gap_flow", "param.gapFlow", "tip.param.gap_flow"],
   ["stack", "param.stack", "tip.param.stack"],
   ["use_filament_flow_ratio", "param.useFilamentFlow", "tip.param.use_filament_flow_ratio"],
+  ["probe", "param.probe", "tip.param.probe"],
 ];
 
 const app = {
@@ -249,6 +256,8 @@ function renderGenStats() {
   const retrInfo = nr != null
     ? `<span title="${t("stats.retractsTip", { short: st.short_travels ?? 0, wipe: (+st.wipe_mm || 0).toFixed(0), coast: (+st.coast_mm || 0).toFixed(1) })}">${t("stats.retracts")} <b>${nr}</b></span>`
     : "";
+  const touchInfo = st.touches
+    ? `<span title="${t("stats.touchesTip", { skipped: st.touch_skipped || 0 })}">${t("stats.touches")} <b>${st.touches}</b></span>` : "";
   const downInfo = di && di.down_mm > 0.05
     ? `<span title="${t("stats.downTip")}">${t("stats.down")} <b>${di.down_mm.toFixed(0)} mm</b></span>` : "";
   const stk = +st.stacked_mm || 0;
@@ -257,7 +266,7 @@ function renderGenStats() {
     : "";
   $("statsBar").innerHTML = `<span>NON-PLANAR</span><b>${fmtTime(st.time_s)}</b>
     <span>${t("stats.toolchanges")} <b>${st.toolchanges}</b></span><span>${t("stats.purge")} <b>${(st.purge_mm3 / 1000).toFixed(2)} cm³</b></span>
-    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${travelInfo}${retrInfo}${dirInfo}${downInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
+    ${parts.join(" ")}<span>Z ${st.min_z.toFixed(2)}–${st.max_z.toFixed(2)}</span>${stackInfo}${travelInfo}${retrInfo}${touchInfo}${dirInfo}${downInfo}<span>${t("stats.linesMs", { lines: app.gen.lines, ms: st.gen_ms })}</span>
     ${st.collisions == null ? "" : `<span style="color:${st.collisions ? "var(--err,#ff3b30)" : "var(--ok,#6c6)"}">${t("stats.collisions")} <b>${st.collisions}</b> · ${st.coll_ms} ms</span>`}`;
 }
 
@@ -1208,7 +1217,7 @@ async function _generate() {
     showTab("3d");
     v3.clear("design");
     v3.setGcode(res.movesArr, app.params.line_width, $("v3Travel").checked, res.flagsArr, res.retracts,
-      { down: $("v3Down").checked, retr: $("v3Retr").checked });
+      { down: $("v3Down").checked, retr: $("v3Retr").checked, touches: res.touches || [] });
     showCollisions(res.collisions);
     v3.setCuts(res.stats.cuts);
     v3.show("cuts", $("v3Cuts").checked);

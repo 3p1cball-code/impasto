@@ -33,6 +33,23 @@ model is sliced perfectly normally, and only the last decorative pass is generat
 The original G-code stays untouched; the new block is inserted right before the printer's end
 G-code.
 
+## Not the only non-planar route
+
+Non-planar printing has more than one answer, and this is not the only solution for it. Full
+non-planar slicers – PancakeSlicer, Orca-based forks – go deeper: they take the model, plan the
+toolpaths themselves and can lay whole layers along a curved surface. This tool does not. It takes
+a print that is already sliced and adds one pass on top of it.
+
+What it does with the technique is different in kind: it uses non-planar motion to **design and
+label a surface – visually and structurally**. A raised line, a pattern, a photo, a word, in up to
+four colours, exactly where you put it. The result is relief you can see and feel, not a different
+toolpath for the part.
+
+So the two do not replace each other, and neither is the better one in general. A full non-planar
+slicer decides how the whole part is printed and can curve a surface; it cannot take your finished
+Bambu slice, read the surface out of it and put a multi-colour pattern on the front of it. That is
+the one thing this tool is built for.
+
 ## Features
 
 - **Surface analysis from above** – height map of the topmost toolpaths on a 0.1 mm grid, angle

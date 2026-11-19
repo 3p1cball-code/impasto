@@ -773,17 +773,19 @@ function renderList() {
   });
 }
 
+// 1:1 copy: position, rotation and scale stay exactly where they are – the copy sits on
+// top of the original (and in the list), so a variant of it can be built right away
 function duplicate(el) {
   app.pushUndo();
   const c = structuredClone(el);
   c.id = newElement(el.type, [0, 0], el.slot).id;
   c.name = el.name + " " + t("el.copy");
-  if (app.hasTf(c)) { c.tf.x += 3; c.tf.y -= 3; }
   app.elements.push(c);
   app.selectedId = c.id;
   penFor(c);
   app.changed(c);
   renderProps();
+  toast(t("toast.duplicated", { name: c.name }));
 }
 function removeEl(el) {
   app.pushUndo();
@@ -1105,6 +1107,18 @@ function renderProps() {
       if (p.fill) { sl(t("props.fillSpacing"), "spacing", 0.2, 5, 0.01); sl(t("props.fillAngle"), "angle", -90, 90, 1, "°", (v) => `${v}°`); }
       marginControl(el, p, sl);
       break;
+  }
+  if (app.hasTf(el)) {
+    P.append(h4(t("props.posH"), t("tip.pos")));
+    const tfSet = (k, v) => { el.tf[k] = v; app.changed(el); };
+    const fx = num(el.tf.x, 0.1, (v) => { app.pushUndo(); tfSet("x", v); });
+    const fy = num(el.tf.y, 0.1, (v) => { app.pushUndo(); tfSet("y", v); });
+    const rr = row(t("props.posXY"), fx, "mm"); rr.append(fy); P.append(rr);
+    const fr = num(el.tf.rot, 1, (v) => { app.pushUndo(); tfSet("rot", v); });
+    P.append(row(t("props.posRot"), fr, "°"));
+    const fs = num(el.tf.s * 100, 1, (v) => { app.pushUndo(); tfSet("s", Math.max(0.02, v / 100)); });
+    P.append(row(t("props.posScale"), fs, "%"));
+    tfFields = { x: fx, y: fy, rot: fr, s: fs };
   }
   randomControls(el, p, sl);
   const b = app.built.get(el.id);

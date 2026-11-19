@@ -3,6 +3,7 @@
 H   : height of the topmost deposited material per cell (bead top = layer Z), NaN = empty
 S   : surface slope in degrees, from a smoothed version of H (staircase removed)
 ZN  : lowest nozzle Z for a flat tip of radius r without touching H (disk max filter)
+FIL : filament index of the material that forms the visible top surface, -1 = unknown
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ class Grid:
     H: np.ndarray            # (ny, nx) float32, NaN where empty
     S: np.ndarray | None = None
     ZN: np.ndarray | None = None
+    Hs: np.ndarray | None = None  # smoothed height, same shape, NaN where empty
+    FIL: np.ndarray | None = None  # (ny, nx) int8 topmost filament index, -1 unknown
     sigma: float = 0.0
     tip_r: float = 0.0
 
@@ -45,6 +48,7 @@ def heightmap(tp: Toolpaths, res: float = 0.1, margin: float = 3.0) -> Grid:
     m = tp.object_mask
     seg = tp.seg[m]
     w = tp.width[m]
+    fl = tp.fil[m]
     if len(seg) == 0:
         raise ValueError("Keine Objekt-Extrusionen im G-Code gefunden.")
     xs = np.concatenate([seg[:, 0], seg[:, 2]])
@@ -65,29 +69,32 @@ def heightmap(tp: Toolpaths, res: float = 0.1, margin: float = 3.0) -> Grid:
     py = seg[idx, 1] + (seg[idx, 3] - seg[idx, 1]) * t
     pz = seg[idx, 4]
     pw = w[idx]
+    pf = fl[idx]
     order = np.argsort(pz, kind="stable")
-    px, py, pz, pw = px[order], py[order], pz[order], pw[order]
+    px, py, pz, pw, pf = px[order], py[order], pz[order], pw[order], pf[order]
     cx = np.rint((px - x0) / res).astype(np.int64)
     cy = np.rint((py - y0) / res).astype(np.int64)
     rc = np.clip(np.rint(pw * 0.5 / res).astype(np.int64), 1, 5)
 
     H = np.full(ny * nx, -np.inf, dtype=np.float32)
+    FIL = np.full(ny * nx, -1, dtype=np.int8)
     for r in np.unique(rc):
         sel = rc == r
-        sx, sy, sz = cx[sel], cy[sel], pz[sel]
+        sx, sy, sz, sf = cx[sel], cy[sel], pz[sel], pf[sel]
         dk = _disk(int(r))
         oy, ox = np.nonzero(dk)
         oy -= int(r)
         ox -= int(r)
-        tmp = np.full(ny * nx, -np.inf, dtype=np.float32)
         for dy, dx in zip(oy, ox):
             qx = sx + dx
             qy = sy + dy
             ok = (qx >= 0) & (qx < nx) & (qy >= 0) & (qy < ny)
             lin = qy[ok] * nx + qx[ok]
-            # z is non-decreasing -> last write wins == max
-            tmp[lin] = sz[ok]
-            np.maximum(H, tmp, out=H)
+            z = sz[ok]
+            # the filament travels with the bead that forms the height of a cell
+            better = z > H[lin]
+            H[lin] = np.maximum(H[lin], z)
+            FIL[lin] = np.where(better, sf[ok], FIL[lin])
     H = H.reshape(ny, nx)
     # fill pin holes (cells surrounded by material)
     valid = np.isfinite(H)
@@ -101,7 +108,15 @@ def heightmap(tp: Toolpaths, res: float = 0.1, margin: float = 3.0) -> Grid:
         H = np.where(hole, mx, H)
         valid = np.isfinite(H)
     H = np.where(valid, H, np.nan).astype(np.float32)
-    return Grid(x0=x0, y0=y0, res=res, nx=nx, ny=ny, H=H)
+    # cells without a filament (pin holes, edges of the sampling) take the nearest known one
+    FIL = FIL.reshape(ny, nx)
+    if (FIL >= 0).any():
+        bad = FIL < 0
+        if bad.any():
+            ind = ndimage.distance_transform_edt(bad, return_distances=False, return_indices=True)
+            FIL = FIL[tuple(ind)]
+    FIL = np.where(valid, FIL, -1).astype(np.int8)
+    return Grid(x0=x0, y0=y0, res=res, nx=nx, ny=ny, H=H, FIL=FIL)
 
 
 def analyze(g: Grid, sigma_mm: float = 0.6, tip_r: float = 0.3) -> Grid:
@@ -115,6 +130,7 @@ def analyze(g: Grid, sigma_mm: float = 0.6, tip_r: float = 0.3) -> Grid:
     slope = np.degrees(np.arctan(np.hypot(gx, gy)))
     slope = np.where(valid, slope, 90.0).astype(np.float32)
     g.S = slope
+    g.Hs = np.where(valid, Hs, np.nan).astype(np.float32)
     rc = int(round(tip_r / g.res))
     Hm = np.where(valid, g.H, -np.inf)
     if rc > 0:

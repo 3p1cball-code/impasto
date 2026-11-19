@@ -1,12 +1,15 @@
 // Design elements: outline, pattern, freehand drawing, image, text, svg.
 // Each element produces polylines in bed coordinates (mm) with a filament slot.
 import { applyTf, simplify, chaikin, clipBy, hatch, circle, hexToRgb, rgbToHex, polyLength, DEG } from "./geom.js";
-import { marchingSquares } from "./grid.js";
+import { marchingSquares, isoLevels } from "./grid.js";
 import { t } from "./i18n.js";
 
 export const TYPES = {
   outline: { label: "type.outline", tf: false,
     defaults: { source: "mask", offset: 0.25, count: 1, spacing: 0.5, minLen: 3 } },
+  contours: { label: "type.contours", tf: true,
+    defaults: { mode: "iso", dz: 0.5, startZ: 0, minLen: 2, maxLines: 400,
+                flowSpacing: 3, flowLen: 40, flowMinSlope: 2, flowStep: 0.3, margin: 0 } },
   pattern: { label: "type.pattern", tf: true,
     defaults: { kind: "wave", spacing: 2.0, amp: 0.6, wavelength: 4.0, frame: "surface", w: 40, h: 20, border: false, margin: 0 } },
   draw: { label: "type.draw", tf: true, defaults: { strokes: [], smooth: 2, margin: 0 } },
@@ -29,11 +32,15 @@ export const PATTERNS = {
 let uid = Date.now() % 100000;
 export function newElement(type, at, slot) {
   const T = TYPES[type];
-  return {
+  const el = {
     id: "e" + (uid++).toString(36), type, name: t(T.label), slot, visible: true, layer: 0,
     tf: { x: at[0], y: at[1], rot: 0, s: 1 },
     props: structuredClone(T.defaults),
   };
+  // height lines are computed in bed coordinates; remember where they were laid down so the
+  // transform stays the identity at that point (props.ox/oy)
+  if (type === "contours") { el.props.ox = at[0]; el.props.oy = at[1]; }
+  return el;
 }
 
 // ------------------------------------------------------------------ caches
@@ -50,6 +57,7 @@ export function build(el, surf, ctx) {
   try {
     switch (el.type) {
       case "outline": return buildOutline(el, surf);
+      case "contours": return buildContours(el, surf);
       case "pattern": return buildPattern(el, surf);
       case "draw": return buildDraw(el);
       case "image": return buildRaster(el, ctx, rasterImage);
@@ -82,6 +90,227 @@ function buildOutline(el, surf) {
     for (const l of iso) if (polyLength(l.pts) >= (p.minLen || 0)) out.push({ slot: el.slot, pts: l.pts, closed: l.closed });
   }
   return { lines: out, box: null };
+}
+
+// ------------------------------------------------------------------ height lines
+// Height lines (iso Z) and slope lines (along the gradient, i.e. 90° to the height lines).
+// The geometry does not depend on the element transform, so it is cached on the surface and
+// only re-transformed when the element is moved – dragging stays smooth.
+function surfCache(surf, key, make) {
+  surf._el ??= new Map();
+  const hit = surf._el.get(key);
+  if (hit) return hit;
+  const v = make();
+  surf._el.set(key, v);
+  if (surf._el.size > 32) surf._el.delete(surf._el.keys().next().value);
+  return v;
+}
+
+function contourWorld(surf, startZ, step) {
+  return surfCache(surf, `iso|${startZ.toFixed(3)}|${step.toFixed(4)}`, () => {
+    const cells = surf.nx * surf.ny;
+    const stride = cells > 2_000_000 ? 3 : cells > 700_000 ? 2 : 1;
+    const out = [];
+    for (const [, lines] of isoLevels(surf.HS, surf.nx, surf.ny, startZ, step, stride)) {
+      for (const l of lines) {
+        if (l.pts.length < 2) continue;
+        const pts = simplify(l.pts.map(([i, j]) => [surf.x0 + i * surf.res, surf.y0 + j * surf.res]), 0.01);
+        out.push({ pts, closed: l.closed });
+      }
+    }
+    return out;
+  });
+}
+
+// Evenly spaced slope lines (Jobard & Lefer, "Creating evenly-spaced streamlines", 1997):
+// every line is traced as far as it goes – down to where the hill flattens or the usable
+// surface ends, then up with what is left of the length budget – and stops when it comes
+// closer than half the spacing to another line (real distances, not a coarse raster).
+// New lines start one spacing beside the existing ones, so the gaps fill up evenly; a
+// lattice of seeds picks up the regions no line has reached yet.
+//   spacing  distance between neighbouring lines (new lines start at 0.9 x spacing)
+//   maxLen   longest line, measured from its lower end
+//   mask     usable surface incl. the element's margin – lines end on it, not clipped later
+export function flowWorld(surf, mask, maskKey, spacing, maxLen, minSlopeDeg, stepLen, minLen = 0) {
+  const key = `flow|${surf.version}|${maskKey}|${spacing.toFixed(2)}|${maxLen.toFixed(1)}|${minSlopeDeg.toFixed(2)}|${stepLen.toFixed(2)}|${(+minLen).toFixed(2)}`;
+  return surfCache(surf, key, () => {
+    const out = [];
+    const b = surf.maskBox;
+    if (!b) return out;
+    const inside = (x, y) => surf.inMaskOf(mask, x, y);
+    const minSlope = Math.max(Math.tan(Math.max(0, minSlopeDeg) * DEG), 1e-4);
+    const dTest = spacing * 0.5;        // a growing line stops this close to another one
+    const dSeed = spacing * 0.9;        // a new line needs this much room to start
+    const keepLen = Math.max(+minLen || 0, stepLen * 3, Math.min(1.0, spacing * 0.5));
+    // registered points of the accepted lines, hashed in cells of dSeed
+    const cs = dSeed;
+    const cells = new Map();
+    const ck = (ix, iy) => ix * 65536 + iy;
+    const addPts = (pts) => {
+      for (const p of pts) {
+        const k = ck(Math.floor((p[0] - surf.x0) / cs), Math.floor((p[1] - surf.y0) / cs));
+        const l = cells.get(k);
+        if (l) l.push(p[0], p[1]); else cells.set(k, [p[0], p[1]]);
+      }
+    };
+    const near = (x, y, d) => {          // is any registered point closer than d?
+      const ix = Math.floor((x - surf.x0) / cs), iy = Math.floor((y - surf.y0) / cs);
+      const d2 = d * d;
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        const l = cells.get(ck(ix + i, iy + j));
+        if (!l) continue;
+        for (let q = 0; q < l.length; q += 2) {
+          const dx = l[q] - x, dy = l[q + 1] - y;
+          if (dx * dx + dy * dy < d2) return true;
+        }
+      }
+      return false;
+    };
+    const steep = (x, y) => {
+      const g = surf.gradAt(x, y);
+      return !!g && Math.hypot(g[0], g[1]) >= minSlope;
+    };
+    // one line through (sx, sy): down first, then up with the rest of the budget
+    const trace = (sx, sy) => {
+      const dn = traceSlope(surf, sx, sy, -1, stepLen, maxLen, minSlope, inside, near, dTest);
+      const Ldn = dn.length * stepLen;
+      const up = traceSlope(surf, sx, sy, 1, stepLen, Math.max(0, maxLen - Ldn), minSlope, inside, near, dTest);
+      const pts = dn.reverse().concat([[sx, sy]], up);
+      if (pts.length < 2 || (pts.length - 1) * stepLen < keepLen - 1e-9) return null;
+      return pts;
+    };
+    const queue = [];
+    const accept = (pts) => {
+      addPts(pts);
+      const sm = simplify(pts, 0.02);
+      out.push({ pts: sm, closed: false });
+      queue.push(pts);
+    };
+    const trySeed = (x, y) => {
+      if (!inside(x, y) || !steep(x, y) || near(x, y, dSeed)) return false;
+      const pts = trace(x, y);
+      if (!pts) return false;
+      accept(pts);
+      return true;
+    };
+    // neighbours one spacing to the left and right of a line, every half spacing along it
+    const grow = () => {
+      while (queue.length && out.length < 20000) {
+        const pts = queue.shift();
+        const every = Math.max(1, Math.round((spacing * 0.5) / stepLen));
+        for (let i = 0; i < pts.length; i += every) {
+          const a = pts[Math.max(0, i - 1)], c = pts[Math.min(pts.length - 1, i + 1)];
+          const tx = c[0] - a[0], ty = c[1] - a[1], tl = Math.hypot(tx, ty);
+          if (tl < 1e-9) continue;
+          const nx = -ty / tl, ny = tx / tl;
+          for (const s of [1, -1]) trySeed(pts[i][0] + s * nx * spacing, pts[i][1] + s * ny * spacing);
+        }
+      }
+    };
+    // seed lattice (hexagonal, half a spacing), lowest points first: the first lines start at
+    // the foot of the hill and run the whole way up
+    const lat = [];
+    const h = spacing * 0.5;
+    let row = 0;
+    for (let y = b[1] + h * 0.5; y <= b[3]; y += h * 0.87, row++) {
+      for (let x = b[0] + h * 0.5 + (row % 2) * h * 0.5; x <= b[2]; x += h) {
+        if (!inside(x, y)) continue;
+        const z = surf.hsAt(x, y);
+        if (z === z) lat.push([z, x, y]);
+      }
+    }
+    lat.sort((p, q) => p[0] - q[0]);
+    for (const [, x, y] of lat) {
+      if (out.length >= 20000) break;
+      if (trySeed(x, y)) grow();
+    }
+    return out;
+  });
+}
+
+// steepest ascent (sgn = 1) or descent (sgn = -1), midpoint steps; stops where the hill gets
+// flatter than minSlope, at the edge of the usable surface, where the direction turns back
+// (ridge / summit), and dTest before another line
+function traceSlope(surf, x0, y0, sgn, stepLen, maxLen, minSlope, inside, near, dTest) {
+  const pts = [];
+  let x = x0, y = y0, L = 0, px = 0, py = 0;
+  for (let n = 0; n < 20000 && L + stepLen <= maxLen + 1e-9; n++) {
+    const g = surf.gradAt(x, y);
+    if (!g) break;
+    const m = Math.hypot(g[0], g[1]);
+    if (!(m >= minSlope)) break;
+    const ux = (sgn * g[0]) / m, uy = (sgn * g[1]) / m;
+    const g2 = surf.gradAt(x + ux * stepLen * 0.5, y + uy * stepLen * 0.5);
+    let vx = ux, vy = uy;
+    if (g2) {
+      const m2 = Math.hypot(g2[0], g2[1]);
+      if (m2 >= minSlope) { vx = (sgn * g2[0]) / m2; vy = (sgn * g2[1]) / m2; }
+    }
+    if (n > 0 && vx * px + vy * py < 0.5) break;      // turns by more than 60°: over the top
+    const nx = x + vx * stepLen, ny = y + vy * stepLen;
+    if (!inside(nx, ny) || near(nx, ny, dTest)) break;
+    pts.push([nx, ny]);
+    x = nx; y = ny; px = vx; py = vy; L += stepLen;
+  }
+  return pts;
+}
+
+// The contour geometry already lives in bed coordinates, so the element transform is applied
+// relative to the point where the element was created (props.ox/oy) – at that point it is the
+// identity, dragging shifts the lines, rotate/scale turn them around that anchor.
+function contourMap(el) {
+  const p = el.props, tf = el.tf, k = tf.s ?? 1, rot = tf.rot || 0;
+  const ox = p.ox ?? tf.x, oy = p.oy ?? tf.y;
+  const dx = tf.x - ox, dy = tf.y - oy;
+  if (!dx && !dy && !rot && k === 1) return null;
+  const c = Math.cos(rot * DEG), s = Math.sin(rot * DEG);
+  return (pts) => pts.map(([x, y]) => {
+    const u = x - ox, v = y - oy;
+    return [ox + dx + k * (c * u - s * v), oy + dy + k * (s * u + c * v)];
+  });
+}
+
+function buildContours(el, surf) {
+  const p = el.props;
+  const mode = p.mode || "iso";
+  const map = contourMap(el);
+  const tf = (pts) => (map ? map(pts) : pts);
+  const out = [];
+  const infos = [];
+  if (mode !== "flow") {
+    const [z0, z1] = surf.hsRange();
+    const dz = Math.max(0.02, +p.dz || 0.5);
+    const start = +p.startZ || 0;
+    let n = Math.floor((z1 - start) / dz + 1e-9) - Math.ceil((z0 - start) / dz - 1e-9) + 1;
+    n = Math.max(0, n);
+    const maxLines = Math.max(2, Math.min(4000, +p.maxLines || 400));
+    let eff = dz, skip = 1;
+    if (n > maxLines) { skip = Math.ceil(n / maxLines); eff = dz * skip; }
+    if (n > 0) {
+      const before = out.length;
+      for (const l of contourWorld(surf, start, eff)) {
+        if (polyLength(l.pts) < (+p.minLen || 0)) continue;
+        out.push({ slot: el.slot, pts: tf(l.pts), closed: l.closed });
+      }
+      infos.push(t("contours.iso", { n: out.length - before, dz: eff.toFixed(2), z0: z0.toFixed(1), z1: z1.toFixed(1) })
+        + (skip > 1 ? t("contours.thin", { n: skip }) : ""));
+    }
+  }
+  if (mode !== "iso") {
+    const sp = Math.max(0.8, +p.flowSpacing || 3);
+    const margin = Math.max(0, +p.margin || 0);
+    const mask = margin > 0 ? surf.maskMargin(margin) : surf.mask;
+    const lines = flowWorld(surf, mask, Math.round(margin * 100), sp, Math.max(3, +p.flowLen || 40),
+      Math.max(0, +p.flowMinSlope || 0), Math.max(0.1, Math.min(1, +p.flowStep || 0.3)), +p.minLen || 0);
+    let n = 0;
+    for (const l of lines) {
+      if (polyLength(l.pts) < (+p.minLen || 0)) continue;
+      out.push({ slot: el.slot, pts: tf(l.pts), closed: false });
+      n++;
+    }
+    infos.push(t("contours.flow", { n, sp: sp.toFixed(1) }));
+  }
+  return { lines: out, box: null, info: infos.join(" · ") };
 }
 
 // ------------------------------------------------------------------ pattern

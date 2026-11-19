@@ -47,11 +47,14 @@ h4 { margin: 10px 0 6px; font-size: 10px; letter-spacing: .14em; color: var(--di
 .row input[type=text], .row select, .row textarea { flex: 1; min-width: 0; }
 .row.tools { gap: 6px; } .row.tools .btn { flex: 1; }
 .val { font-family: var(--mono); font-size: 11px; color: var(--acc2); min-width: 50px; text-align: right; }
+input[type=color].colorin { width: 30px; height: 24px; padding: 1px; border: 1px solid var(--line2); background: var(--bg); flex: none; }
+input[type=color].colorin:hover { border-color: var(--acc); }
 .unit { color: var(--dim); font-size: 11px; }
 .hint { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 10px; color: var(--dim); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend i { width: 9px; height: 9px; display: inline-block; }
+.legend i.filsw { width: 22px; background: linear-gradient(90deg, #f4f4f4, #f2a33a 55%, #6b7a8c); }
 .info { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 6px; white-space: pre-line; }
 details summary { cursor: pointer; color: var(--dim); font-size: 11px; letter-spacing: .1em; margin: 6px 0; }
 .chk { display: inline-flex; gap: 5px; align-items: center; color: var(--dim); font-size: 11px; white-space: nowrap; }

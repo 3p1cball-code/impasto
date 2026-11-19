@@ -62,9 +62,24 @@ the one thing this tool is built for.
 - **Surface analysis from above** – height map of the topmost toolpaths on a 0.1 mm grid, angle
   from the smoothed height, nozzle radius, edge inset, minimum height and minimum area. Surfaces
   can be included and excluded with a click.
-- **Elements**: contour, patterns (lines, grid, waves, zigzag, curls, circles, spiral, dots,
-  diamonds), freehand drawing, images (PNG/JPG, k-means colour separation), text and SVG.
-  Move, scale, rotate, recolour; crop and tile images and text.
+- **Elements**: contour, height lines, patterns (lines, grid, waves, zigzag, curls, circles,
+  spiral, dots, diamonds), freehand drawing, images (PNG/JPG, k-means colour separation), text
+  and SVG. Move, scale, rotate, recolour; crop and tile images and text.
+- **Height lines** – iso lines at a Z step, like a topographic map of the part: close together on
+  steep places, wide apart on flat ones. The same element can instead (or as well) draw *slope
+  lines* along the height gradient, 90° to the iso lines, running up and down the hill and making
+  the gradients visible. Slope lines are evenly spaced streamlines (Jobard & Lefer): each one is
+  traced from the foot of the hill upwards until the hill flattens, the usable surface (minus the
+  margin) ends, the maximum length is used up or it comes within half a spacing of another line;
+  new lines start one spacing beside the existing ones, so the gaps fill evenly. Both come from
+  the smoothed height (σ), stay on the usable surface and print like every other element. All levels are extracted in a single pass over the
+  grid, so the step slider stays live; if a step asks for too many lines they are thinned out to
+  every n-th height instead of hanging the UI.
+
+<p align="center">
+  <img src="docs/height-lines.png" alt="Height lines at a 0.4 mm Z step on a glasses front" width="49%">
+  <img src="docs/slope-lines.png" alt="Slope lines along the height gradient on the same part" width="49%">
+</p>
 - **Order is the stack** – the element list is the stacking order. Where two elements overlap, the
   lower one is printed first; everything that does not overlap is free, so all elements of a colour
   are planned as one chain and a colour only comes back when an overlap needs it. Every line is
@@ -123,8 +138,18 @@ the one thing this tool is built for.
   MQTT. Every filament used by the object *and* by the non-planar layer is mapped to an AMS tray
   (colour + material first, a free tray after that). If a filament cannot be mapped or the AMS
   cannot be read, the start is refused instead of falling back to the external spool.
+- **The surface in its print colours** – the 2D drawing and the 3D surface take the colour of the
+  filament that lies on top at each spot: the parser records which `T` a bead belongs to, and the
+  height map keeps the filament of the bead that forms the height of a cell. After **AMS SYNC**
+  these are the AMS tray colours, so the design can be judged against the real part before it is
+  printed. *Neutral* keeps the grey/amber work view, *custom colour* paints the part in one colour
+  of your choice (e.g. white for a natural PHA print). The setting is remembered per browser.
 - **English / German UI** with a language selector; every explanation lives in a hover tooltip
   (the small `i`) instead of taking space next to the controls.
+
+<p align="center">
+  <img src="docs/print-colours.png" alt="Surface and design in the colours they are printed in" width="100%">
+</p>
 
 <p align="center">
   <img src="docs/hover-info.png" alt="Hover info explaining the surface settings" width="100%">
@@ -163,10 +188,13 @@ requirements and restarts the service there.
 
 1. **Load** a Bambu `.gcode` or a sliced `.gcode.3mf` (plate selector for multi-plate files).
 2. **Surface** – set the maximum angle, edge inset, minimum height and area. The drawing shows
-   what is usable (amber), too steep or too low (grey) and excluded (red). Refine σ and the nozzle
-   radius under *Analysis*.
-3. **Elements** – add contours, patterns, drawings, images, text or SVG. Everything is clipped to
-   the usable surface live; each element has its own margin and optional spline smoothing.
+   what is usable (amber), too steep or too low (grey) and excluded (red). Under *View* the same
+   drawing switches to **Print colours** (the part in the filaments it is printed with, AMS colours
+   after *AMS Sync*), *Neutral* or one colour of your choice. Refine σ and the nozzle radius under
+   *Analysis*.
+3. **Elements** – add height lines, contours, patterns, drawings, images, text or SVG. Everything
+   is clipped to the usable surface live; each element has its own margin and optional spline
+   smoothing.
 4. **Generate** – the G-code block is built, the optional collision check runs, and the 3D view
    opens with playback. The status bar shows time, filament changes, purge, uphill share, cuts and
    collisions.
@@ -181,13 +209,15 @@ Designs and named variants are stored per file and plate, so switching between i
 A height map is built from above (0.1 mm cells), invalid cells are filled, the height is smoothed
 (σ) and the angle is derived from the gradient. Steeper than the limit, deeper than the minimum
 height or smaller than the minimum area is not printable. The nozzle radius is handled as a disc
-maximum, so the nozzle cannot clip a step.
+maximum, so the nozzle cannot clip a step. The same pass notes which filament forms the height of
+each cell, which is what the *Print colours* view draws (and later the AMS colours, after a sync).
 
 **Decoration layer.** Every element becomes polylines in bed coordinates. They are clipped to the
 mask (minus the element margin), optionally smoothed and simplified, then resampled at `step`.
 `z` is the maximum of the surface under the nozzle disc plus `z_offset`, raised over previously
 printed non-planar lines (sampled right before each line is printed) and over earlier parts of the
-same line where it crosses itself, with ramps across crossings. Extrusion is derived from the line
+same line where it crosses itself, with ramps across crossings (only the lift over the surface
+is ramped – a hill steeper than the ramp is followed as it is). Extrusion is derived from the line
 width and the real gap below the nozzle; speed is capped per segment by the filament's maximum
 volumetric speed at that gap and reduced in tight curves. Travels lift `hop` over the highest
 surface point and `hop_bead` over the highest printed line along their path; short ones stay down.

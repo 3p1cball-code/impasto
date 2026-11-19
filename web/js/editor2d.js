@@ -1,5 +1,5 @@
 // Top-view editor: surface/mask display, element drawing, select/move/scale/rotate, freehand, region toggling.
-import { applyTf, invTf, DEG } from "./geom.js";
+import { applyTf, invTf, DEG, hexToRgb } from "./geom.js";
 import { t } from "./i18n.js";
 
 export class Editor2D {
@@ -57,23 +57,8 @@ export class Editor2D {
   setSurface(s) {
     this.surf = s;
     const { nx, ny, H, res, valid } = s;
-    const shade = new Float32Array(nx * ny);
-    const lx = -0.5, ly = 0.6, lz = 0.62;
-    const ln = Math.hypot(lx, ly, lz);
-    for (let j = 1; j < ny - 1; j++) {
-      for (let i = 1; i < nx - 1; i++) {
-        const k = j * nx + i;
-        if (!valid[k]) continue;
-        const hl = valid[k - 1] ? H[k - 1] : H[k], hr = valid[k + 1] ? H[k + 1] : H[k];
-        const hd = valid[k - nx] ? H[k - nx] : H[k], hu = valid[k + nx] ? H[k + nx] : H[k];
-        const dx = (hr - hl) / (2 * res), dy = (hu - hd) / (2 * res);
-        const nn = Math.hypot(dx, dy, 1);
-        const d = (-dx * lx - dy * ly + lz) / (nn * ln);
-        shade[k] = Math.max(0, d);
-      }
-    }
-    // height tint
-    this.shade = shade;
+    this.shade = hillshade(H, valid, nx, ny, res);                 // raw height, keeps the layer steps
+    this.shadeS = s.HS ? hillshade(s.HS, valid, nx, ny, res) : this.shade;   // smoothed, for colour views
     this.bgCanvas = new OffscreenCanvas(nx, ny);
     this.updateMask();
   }
@@ -82,6 +67,11 @@ export class Editor2D {
     const s = this.surf;
     if (!s || !s.mask) return;
     const { nx, ny, valid, base, mask, labels, regionOff } = s;
+    const app = this.app;
+    // print mode: colour every cell with the filament that forms its visible top surface
+    const print = app.surfaceMode === "print" && s.FIL;
+    const filcol = print ? app.meta.filaments.map(f => hexToRgb(f.color)) : null;
+    const custom = !print && app.surfaceMode === "custom" ? hexToRgb(app.surfaceCustom) : null;
     const img = new ImageData(nx, ny);
     const d = img.data;
     const zr = Math.max(0.1, s.zmax - s.zmin);
@@ -91,12 +81,36 @@ export class Editor2D {
         const k = j * nx + i, q = (row + i) * 4;
         if (!valid[k]) { d[q + 3] = 0; continue; }
         const h = (s.H[k] - s.zmin) / zr;
-        const v = 40 + 150 * this.shade[k] + 30 * h;
-        let r = v, g = v, b = v;
-        if (mask[k]) { r = v * 0.78 + 242 * 0.22 * (0.6 + 0.4 * this.shade[k]); g = v * 0.78 + 163 * 0.22; b = v * 0.78 + 58 * 0.22; }
-        else if (base[k]) { r = v * 0.85 + 30; g = v * 0.8 + 18; b = v * 0.7; }
-        else if (labels[k] >= 0 && regionOff[labels[k]] === 1) { r = v * 0.5 + 50; g = v * 0.4; b = v * 0.45; }
-        else { r = v * 0.45; g = v * 0.5; b = v * 0.62; }
+        const sh = (print || custom) && this.shadeS ? this.shadeS[k] : this.shade[k];
+        let r, g, b;
+        if (print) {
+          const fi = s.FIL[k];
+          const c = (fi >= 0 && filcol[fi]) || [150, 150, 150];
+          // hue stays the filament colour, the hillshade carries the shape (a black part
+          // would otherwise vanish on the dark canvas – dark colours get a little ambient lift)
+          const lum = (c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11) / 255;
+          const f = 0.7 + 0.45 * sh + 0.05 * h, add = 12 * sh + (1 - lum) * (10 + 22 * sh);
+          r = c[0] * f + add; g = c[1] * f + add; b = c[2] * f + add;
+          if (!mask[k]) {
+            if (base[k]) { r *= 0.6; g *= 0.6; b *= 0.6; }
+            else if (labels[k] >= 0 && regionOff[labels[k]] === 1) { r = r * 0.55 + 60; g *= 0.35; b *= 0.35; }
+            else { r *= 0.4; g *= 0.42; b *= 0.48; }
+          }
+        } else if (custom) {
+          const f = 0.7 + 0.45 * sh + 0.05 * h, add = 12 * sh;
+          r = custom[0] * f + add; g = custom[1] * f + add; b = custom[2] * f + add;
+          if (mask[k]) { r = r * 0.85 + 242 * 0.15; g = g * 0.85 + 163 * 0.15; b = b * 0.85 + 58 * 0.15; }
+          else if (base[k]) { r = r * 0.75 + 24; g = g * 0.7 + 14; b *= 0.6; }
+          else if (labels[k] >= 0 && regionOff[labels[k]] === 1) { r = r * 0.5 + 50; g *= 0.4; b *= 0.45; }
+          else { r *= 0.42; g *= 0.44; b *= 0.5; }
+        } else {
+          const v = 40 + 150 * sh + 30 * h;
+          r = v; g = v; b = v;
+          if (mask[k]) { r = v * 0.78 + 242 * 0.22 * (0.6 + 0.4 * sh); g = v * 0.78 + 163 * 0.22; b = v * 0.78 + 58 * 0.22; }
+          else if (base[k]) { r = v * 0.85 + 30; g = v * 0.8 + 18; b = v * 0.7; }
+          else if (labels[k] >= 0 && regionOff[labels[k]] === 1) { r = v * 0.5 + 50; g = v * 0.4; b = v * 0.45; }
+          else { r = v * 0.45; g = v * 0.5; b = v * 0.62; }
+        }
         d[q] = r; d[q + 1] = g; d[q + 2] = b; d[q + 3] = 255;
       }
     }
@@ -387,6 +401,25 @@ export class Editor2D {
     const hit = this.hitElement(sx, sy);
     if (!hit) this.fit();
   }
+}
+
+function hillshade(Z, valid, nx, ny, res) {
+  const out = new Float32Array(nx * ny);
+  const lx = -0.5, ly = 0.6, lz = 0.62;
+  const ln = Math.hypot(lx, ly, lz);
+  for (let j = 1; j < ny - 1; j++) {
+    for (let i = 1; i < nx - 1; i++) {
+      const k = j * nx + i;
+      if (!valid[k]) continue;
+      const hl = valid[k - 1] ? Z[k - 1] : Z[k], hr = valid[k + 1] ? Z[k + 1] : Z[k];
+      const hd = valid[k - nx] ? Z[k - nx] : Z[k], hu = valid[k + nx] ? Z[k + nx] : Z[k];
+      const dx = (hr - hl) / (2 * res), dy = (hu - hd) / (2 * res);
+      const nn = Math.hypot(dx, dy, 1);
+      const d = (-dx * lx - dy * ly + lz) / (nn * ln);
+      out[k] = Math.max(0, d);
+    }
+  }
+  return out;
 }
 
 export function makePaths(lines) {

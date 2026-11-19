@@ -4,6 +4,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { hexToRgb } from "./geom.js";
 
 export class View3D {
   constructor(host, app) {
@@ -126,11 +127,25 @@ export class View3D {
     if (!s || !this.surfMesh || !s.mask) return;
     const [nx, ny] = this.surfDims, f = this.dsf;
     const col = this.surfMesh.geometry.getAttribute("color");
-    const base = this.app.surfaceColor();
+    const app = this.app;
+    // print mode: every vertex takes the colour of the filament that forms the top surface
+    const print = app.surfaceMode === "print" && s.FIL;
+    const filcol = print ? app.meta.filaments.map(x => hexToRgb(x.color)) : null;
+    const base = app.surfaceColor();
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
       const k = (j * f) * s.nx + i * f, q = j * nx + i;
       let c;
-      if (s.mask[k]) c = [base[0] * 0.75 + 0.95 * 0.25, base[1] * 0.75 + 0.64 * 0.25, base[2] * 0.75 + 0.23 * 0.25];
+      if (print) {
+        const fi = s.FIL[k];
+        const rgb = (fi >= 0 && filcol[fi]) || [150, 150, 150];
+        c = [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+        const off = s.labels[k] >= 0 && s.regionOff[s.labels[k]] === 1;
+        if (s.mask[k]) c = c.map(v => 0.93 * v + 0.055);          // ambient lift: black parts stay visible
+        else if (s.base[k]) c = c.map(v => 0.58 * v + 0.02);
+        else if (off) c = [c[0] * 0.5 + 0.24, c[1] * 0.32 + 0.03, c[2] * 0.32 + 0.03];
+        else c = c.map(v => 0.42 * v + 0.015);
+      }
+      else if (s.mask[k]) c = [base[0] * 0.75 + 0.95 * 0.25, base[1] * 0.75 + 0.64 * 0.25, base[2] * 0.75 + 0.23 * 0.25];
       else if (s.base[k]) c = [base[0] * 0.9, base[1] * 0.85, base[2] * 0.8];
       else c = [base[0] * 0.45, base[1] * 0.48, base[2] * 0.55];
       col.setXYZ(q, c[0], c[1], c[2]);
@@ -162,6 +177,7 @@ export class View3D {
 
   // ------------------------------------------------------------ original toolpaths
   setOriginal(tp, colors) {
+    this.origData = tp;
     this.clear("orig");
     if (!tp || !tp.n) return;
     const n = tp.n;
@@ -180,6 +196,19 @@ export class View3D {
     geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
     this.groups.orig.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 })));
     this.render();
+  }
+
+  // colours changed (AMS sync / surface view): repaint what is already on screen without
+  // rebuilding geometry, so the current playback position survives
+  recolor() {
+    const colors = this.app.meta ? this.app.meta.filaments.map(f => f.color) : [];
+    if (this.origData) this.setOriginal(this.origData, colors);
+    if (!this.moves) return;
+    const i = this.playI, travelOn = this.groups.travel.visible, retrOn = this.groups.retr.visible;
+    const coll = this.collMoves;
+    this.setGcode(this.moves, this.lw, travelOn, this.flags, this.retracts, { down: this.downOn, retr: retrOn });
+    this.collMoves = coll;
+    this.setPlay(i ?? this.moves.length / 9);
   }
 
   // ------------------------------------------------------------ design preview (before generation)

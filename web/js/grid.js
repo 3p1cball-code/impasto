@@ -11,13 +11,21 @@ export class Surface {
     this.H = new Float32Array(buf.slice(o, o + n * 4)); o += n * 4;
     this.ZN = new Float32Array(buf.slice(o, o + n * 4)); o += n * 4;
     this.S = new Uint8Array(buf.slice(o, o + n));       // half degrees
+    o += n;
+    // smoothed height (same validity as H) – the field the height lines follow
+    this.HS = o + n * 4 <= buf.byteLength ? new Float32Array(buf.slice(o, o + n * 4)) : this.H;
+    // filament index of the visible top surface (fmt 2, optional) – -1 unknown
+    this.FIL = o + n * 5 <= buf.byteLength ? new Int8Array(buf.slice(o + n * 4, o + n * 5)) : null;
     this.n = n;
     this.valid = new Uint8Array(n);
-    let zmin = Infinity, zmax = -Infinity;
+    let zmin = Infinity, zmax = -Infinity, hmin = Infinity, hmax = -Infinity;
     for (let i = 0; i < n; i++) {
       if (this.H[i] > -0.5) { this.valid[i] = 1; const z = this.H[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
+      const h = this.HS[i];
+      if (h > -0.5) { if (h < hmin) hmin = h; if (h > hmax) hmax = h; }
     }
     this.zmin = zmin; this.zmax = zmax;
+    this.hsMin = hmin; this.hsMax = hmax;
     this.version = 0;
     this._footDist = null;
   }
@@ -123,6 +131,33 @@ export class Surface {
     return m > -0.5 ? m : NaN;
   }
 
+  // smoothed height, bilinear; NaN outside the part or on a cell corner that is empty
+  hsAt(x, y) {
+    const fx = (x - this.x0) / this.res, fy = (y - this.y0) / this.res;
+    const i = Math.floor(fx), j = Math.floor(fy);
+    if (i < 0 || j < 0 || i >= this.nx - 1 || j >= this.ny - 1) return NaN;
+    const k = j * this.nx + i;
+    if (!this.valid[k] || !this.valid[k + 1] || !this.valid[k + this.nx] || !this.valid[k + this.nx + 1]) return NaN;
+    const u = fx - i, v = fy - j;
+    const a = this.HS[k], b = this.HS[k + 1], c = this.HS[k + this.nx], d = this.HS[k + this.nx + 1];
+    if (a < -0.5 || b < -0.5 || c < -0.5 || d < -0.5) return NaN;
+    return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+  }
+
+  // height gradient (dh/dx, dh/dy); null outside the part
+  gradAt(x, y) {
+    const h = this.res;
+    const xl = this.hsAt(x - h, y), xr = this.hsAt(x + h, y);
+    const yl = this.hsAt(x, y - h), yr = this.hsAt(x, y + h);
+    if (!(xl === xl) || !(xr === xr) || !(yl === yl) || !(yr === yr)) return null;
+    return [(xr - xl) / (2 * h), (yr - yl) / (2 * h)];
+  }
+
+  hsRange() {
+    const ok = isFinite(this.hsMin) && isFinite(this.hsMax) && this.hsMax > this.hsMin;
+    return ok ? [this.hsMin, this.hsMax] : [0, 1];
+  }
+
   // mask eroded by an extra margin (mm) relative to the global inset; cached per 0.01 mm
   maskMargin(m) {
     const thr = this.inset + Math.max(0, m);
@@ -225,6 +260,108 @@ export function edt(bin, nx, ny, res) {
     for (let x = 0; x < nx; x++) out[y * nx + x] = Math.sqrt(d[x]) * res;
   }
   return out;
+}
+
+// Marching squares for a whole stack of levels in one pass: every cell emits its crossings
+// into per-level buckets, so the cost does not grow with the number of levels.
+// F is (ny x nx) with a negative sentinel outside the part; `stride` samples every n-th node
+// (cheap on big grids). Returns Map<k, [{pts, closed}]> with level = base + k*step, points in
+// full-resolution cell coordinates.
+export function isoLevels(F, nx, ny, base, step, stride = 1, opt = {}) {
+  const cellCap = opt.cellCap ?? 200;          // crossings a single cell may contribute
+  const maxSeg = opt.maxSeg ?? 900000;         // global safety cap
+  const s = Math.max(1, stride | 0);
+  const nxs = Math.floor((nx - 1) / s) + 1;
+  const nys = Math.floor((ny - 1) / s) + 1;
+  const buckets = new Map();
+  let segs = 0;
+  const ek = (ii, jj, vert) => (jj * nxs + ii) * 2 + (vert ? 1 : 0);
+  for (let j = 0; j < nys - 1 && segs < maxSeg; j++) {
+    const r0 = (j * s) * nx, r1 = ((j + 1) * s) * nx;
+    const y0 = j * s, y1 = (j + 1) * s;
+    for (let i = 0; i < nxs - 1 && segs < maxSeg; i++) {
+      const c0 = i * s, c1 = (i + 1) * s;
+      const a = F[r0 + c0], b = F[r0 + c1], c = F[r1 + c1], d = F[r1 + c0];
+      if (!(a > -0.5 && b > -0.5 && c > -0.5 && d > -0.5)) continue;   // empty cell
+      const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d);
+      let k0 = Math.ceil((lo - base) / step - 1e-9), k1 = Math.floor((hi - base) / step + 1e-9);
+      if (k1 < k0) continue;
+      if (k1 - k0 >= cellCap) k1 = k0 + cellCap - 1;
+      for (let k = k0; k <= k1; k++) {
+        const lev = base + k * step;
+        let idx = 0;
+        if (a > lev) idx |= 1; if (b > lev) idx |= 2; if (c > lev) idx |= 4; if (d > lev) idx |= 8;
+        if (idx === 0 || idx === 15) continue;
+        let bk = buckets.get(k);
+        if (!bk) { bk = { A: [], B: [], pos: new Map() }; buckets.set(k, bk); }
+        const pos = bk.pos;
+        const edge = (e) => {
+          const key = e === 0 ? ek(i, j, 0) : e === 1 ? ek(i + 1, j, 1) : e === 2 ? ek(i, j + 1, 0) : ek(i, j, 1);
+          if (!pos.has(key)) {
+            let p;
+            if (e === 0) { const t = (lev - a) / (b - a); p = [c0 + (c1 - c0) * t, y0]; }
+            else if (e === 1) { const t = (lev - b) / (c - b); p = [c1, y0 + (y1 - y0) * t]; }
+            else if (e === 2) { const t = (lev - d) / (c - d); p = [c0 + (c1 - c0) * t, y1]; }
+            else { const t = (lev - a) / (d - a); p = [c0, y0 + (y1 - y0) * t]; }
+            pos.set(key, p);
+          }
+          return key;
+        };
+        const add = (e1, e2) => { bk.A.push(edge(e1)); bk.B.push(edge(e2)); segs++; };
+        switch (idx) {
+          case 1: case 14: add(3, 0); break;
+          case 2: case 13: add(0, 1); break;
+          case 3: case 12: add(3, 1); break;
+          case 4: case 11: add(1, 2); break;
+          case 6: case 9: add(0, 2); break;
+          case 7: case 8: add(3, 2); break;
+          case 5: case 10: {
+            const ctr = (a + b + c + d) / 4 > lev;
+            if ((idx === 5) === ctr) { add(3, 2); add(0, 1); } else { add(3, 0); add(1, 2); }
+            break;
+          }
+        }
+      }
+    }
+  }
+  const out = new Map();
+  for (const [k, bk] of buckets) out.set(k, stitchSegments(bk.A, bk.B, bk.pos));
+  return out;
+}
+
+// join segment endpoints (edge keys) into polylines
+function stitchSegments(segA, segB, pos) {
+  const adj = new Map();
+  for (let s = 0; s < segA.length; s++) {
+    for (const key of [segA[s], segB[s]]) {
+      const l = adj.get(key); if (l) l.push(s); else adj.set(key, [s]);
+    }
+  }
+  const used = new Uint8Array(segA.length);
+  const lines = [];
+  const other = (s, key) => (segA[s] === key ? segB[s] : segA[s]);
+  for (let s0 = 0; s0 < segA.length; s0++) {
+    if (used[s0]) continue;
+    used[s0] = 1;
+    const fwd = [segA[s0], segB[s0]];
+    for (let dir = 0; dir < 2; dir++) {
+      const arr = dir === 0 ? fwd : null;
+      let key = dir === 0 ? fwd[fwd.length - 1] : fwd[0];
+      const back = [];
+      while (true) {
+        const l = adj.get(key); let nxt = -1;
+        if (l) for (const s of l) if (!used[s]) { nxt = s; break; }
+        if (nxt < 0) break;
+        used[nxt] = 1;
+        key = other(nxt, key);
+        if (dir === 0) arr.push(key); else back.push(key);
+      }
+      if (dir === 1 && back.length) fwd.unshift(...back.reverse());
+    }
+    const closed = fwd.length > 3 && fwd[0] === fwd[fwd.length - 1];
+    lines.push({ closed, pts: fwd.map(k => pos.get(k)) });
+  }
+  return lines;
 }
 
 // Marching squares with segment stitching. Returns [{pts:[[i,j],..], closed}] in cell coordinates.

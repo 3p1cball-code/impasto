@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import io
 import re
@@ -338,6 +339,38 @@ def test_single_touch_and_hot_touch(setup):
     assert "M109 S140" not in res.gcode
     off = generate.generate(job, tp, g, paths, generate.Params())
     assert "G380" not in off.gcode and "G92 Z" not in off.gcode
+
+
+def test_steep_hills_are_followed_not_ramped(setup):
+    """The crossing ramp only shapes the lift over a printed bead. On a 35° hill (steeper
+    than ramp 0.5 = 26.6°) the nozzle must stay on the surface – the old ramp lifted
+    whole slope lines into the air."""
+    job, tp, g = setup
+    steep = copy.copy(g)
+    X = g.x0 + np.arange(g.nx) * g.res
+    hill = np.broadcast_to((5.0 + np.tan(np.radians(35)) * (X - g.x0))[None, :], g.H.shape)
+    valid = np.isfinite(g.H)
+    steep.H = np.where(valid, hill, np.nan).astype(np.float32)
+    steep.ZN = steep.H.copy()
+    paths = [{"slot": 0, "pts": [[40, 55], [140, 55]]}]
+    p = generate.Params(z_offset=0.1, ramp=0.5, stack=True, dir_opt=True)
+    res = generate.generate(job, tp, steep, paths, p)
+    ext = res.moves[res.moves[:, 0] == 0]
+    zn = surface.sample_max(steep.ZN, steep, ext[:, 5], ext[:, 6])
+    assert len(ext) > 50
+    assert np.allclose(ext[:, 7], zn + 0.1, atol=1e-3)
+    assert res.stats["dir"]["down_mm"] == 0
+
+
+def test_ramp_lift_only_ramps_the_lift():
+    ds = np.r_[0.0, np.full(20, 0.25)]
+    lift = np.zeros(21)
+    lift[10] = 0.5                       # a bead below the middle point
+    out = generate._ramp_lift(lift, ds, 0.5)
+    assert out[10] == pytest.approx(0.5)
+    assert out[9] == pytest.approx(0.375) and out[11] == pytest.approx(0.375)
+    assert out[0] == 0 and out[-1] == 0
+    assert (out >= lift).all()
 
 
 def test_slope_compensation_lowers_but_keeps_clear(setup):

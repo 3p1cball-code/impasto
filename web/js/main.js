@@ -67,6 +67,8 @@ const app = {
   showRealWidth: true,
   gen: null, genStale: true, genLines: null,
   lastSlot: null,
+  surfaceMode: "print",       // print = filament colours as printed, plain = neutral, custom = one colour
+  surfaceCustom: "#e8e8e8",
 };
 window.impasto = app;
 
@@ -102,9 +104,24 @@ app.slotColor = (slot) => app.meta?.filaments?.[slot]?.color || "#999999";
 app.hasTf = (el) => TYPES[el.type].tf;
 app.selected = () => app.elements.find(e => e.id === app.selectedId) || null;
 app.currentSlot = () => app.selected()?.slot ?? app.lastSlot ?? 0;
+// base colour for the neutral/custom surface views (0..1, as the renderers expect)
 app.surfaceColor = () => {
-  const c = hexToRgb(app.slotColor(app.meta?.last_filament ?? 0));
+  const hex = app.surfaceMode === "custom" ? app.surfaceCustom : app.slotColor(app.meta?.last_filament ?? 0);
+  const c = hexToRgb(hex);
   return c.map(v => 0.25 + 0.6 * (v / 255));
+};
+// repaint surface + toolpaths after a colour change (AMS sync, view mode) – no regeneration
+app.recolor = () => {
+  if (!app.surf) return;
+  editor.updateMask();
+  v3.updateMask();
+  v3.recolor();
+  update3dDesign();
+  updateDesignStats();
+  renderList();
+};
+app.saveSurfacePrefs = () => {
+  try { localStorage.setItem("impasto.surface", JSON.stringify({ mode: app.surfaceMode, color: app.surfaceCustom })); } catch {}
 };
 
 // ------------------------------------------------------------------ editor + 3d
@@ -619,6 +636,26 @@ app.toggleRegion = (w) => {
 };
 $("regionReset").onclick = () => { app.pushUndo(); app.mask.exclude = []; recomputeMask(); };
 
+// ------------------------------------------------------------------ surface view
+// The surface can be shown in the colours it is actually printed in (top-layer filament
+// from the G-code, AMS colours after AMS SYNC), neutral as before, or in one own colour.
+function syncSurfaceUi() {
+  $("surfMode").value = app.surfaceMode;
+  $("surfColor").value = app.surfaceCustom;
+  $("surfColor").classList.toggle("hidden", app.surfaceMode !== "custom");
+  $("legendMask").classList.toggle("hidden", app.surfaceMode === "print");
+  $("legendPrint").classList.toggle("hidden", app.surfaceMode !== "print");
+}
+$("surfMode").addEventListener("change", (e) => {
+  app.surfaceMode = e.target.value;
+  syncSurfaceUi(); app.saveSurfacePrefs(); app.recolor();
+});
+$("surfColor").addEventListener("input", (e) => {
+  app.surfaceCustom = e.target.value;
+  app.saveSurfacePrefs();
+  if (app.surfaceMode === "custom") app.recolor();
+});
+
 // ------------------------------------------------------------------ tools
 function setTool(tool) {
   editor.tool = tool;
@@ -781,9 +818,7 @@ async function syncAms() {
       f.ams = { slot: m.t.slot, type: m.t.type, exact: m.exact };
     }
     renderFilaments();
-    for (const el of app.elements) app.changed(el, { live: true });
-    editor.render();
-    updateDesignStats();
+    app.recolor();
     toast(n ? t("toast.amsSynced", { n }) : t("toast.amsSyncedSame"));
   } catch (e) {
     toast(e.message, true);
@@ -902,7 +937,7 @@ function renderProps() {
     P.append(row(t("props.color"), slotPicker(el.slot, (s) => { app.pushUndo(); el.slot = s; app.lastSlot = s; app.changed(el); renderProps(); })));
   }
   const p = el.props;
-  const typeTip = { outline: "tip.outline", pattern: "tip.patternEl", draw: "tip.drawEl" }[el.type];
+  const typeTip = { outline: "tip.outline", contours: "tip.contoursEl", pattern: "tip.patternEl", draw: "tip.drawEl" }[el.type];
   P.append(h4(t(TYPES[el.type].label).toUpperCase(), typeTip ? t(typeTip) : null));
   const sl = (label, k, min, max, step, unit = "mm", fmt, tipText) =>
     P.append(row(label, slider(p[k], min, max, step, (v, live) => setPropLive(el, k, v, live), fmt || ((v) => `${(+v).toFixed(step < 0.1 ? 2 : 1)} ${unit}`)), null, tipText));
@@ -912,6 +947,21 @@ function renderProps() {
       sl(t("props.offset"), "offset", 0, 10, 0.05);
       sl(t("props.count"), "count", 1, 30, 1, "", (v) => `${v}×`);
       sl(t("props.spacing"), "spacing", 0.2, 10, 0.05);
+      sl(t("props.minLen"), "minLen", 0, 50, 0.5);
+      marginControl(el, p, sl);
+      break;
+    case "contours":
+      P.append(row(t("props.mode"), seg({ iso: t("props.modeIso"), both: t("props.modeBoth"), flow: t("props.modeFlow") },
+        p.mode || "iso", (v) => { setProp(el, "mode", v); renderProps(); })));
+      if (p.mode !== "flow") {
+        sl(t("props.dz"), "dz", 0.05, 5, 0.05, "mm", null, t("tip.dz"));
+        sl(t("props.startZ"), "startZ", -5, 5, 0.05, "mm", null, t("tip.startZ"));
+      }
+      if (p.mode !== "iso") {
+        sl(t("props.flowSpacing"), "flowSpacing", 0.8, 15, 0.1, "mm", null, t("tip.flowSpacing"));
+        sl(t("props.flowLen"), "flowLen", 3, 200, 1, "mm", null, t("tip.flowLen"));
+        sl(t("props.flowMinSlope"), "flowMinSlope", 0, 45, 0.5, "°", (v) => `${v}°`, t("tip.flowMinSlope"));
+      }
       sl(t("props.minLen"), "minLen", 0, 50, 0.5);
       marginControl(el, p, sl);
       break;
@@ -1383,6 +1433,7 @@ onLang(() => {
   loadHeads();
   loadPrinter();
   if (!app.meta) { updateDesignStats(); return; }
+  for (const el of app.elements) rebuildElement(el);   // element info texts follow the language
   renderFilaments(); renderParams(); renderProps(); renderList(); updateDesignStats();
   refreshVariants();
   maskInfo();
@@ -1390,10 +1441,16 @@ onLang(() => {
 });
 
 // ------------------------------------------------------------------ start
+try {
+  const sp = JSON.parse(localStorage.getItem("impasto.surface") || "null");
+  if (sp && ["print", "plain", "custom"].includes(sp.mode)) app.surfaceMode = sp.mode;
+  if (sp && /^#[0-9a-f]{6}$/i.test(sp.color || "")) app.surfaceCustom = sp.color;
+} catch {}
 initLang();
 initTips();
 applyStatic();
 markLangButtons();
+syncSurfaceUi();
 updateDesignStats();
 (async function init() {
   loadPrinter();

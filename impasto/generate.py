@@ -758,6 +758,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
             dsp = np.r_[0.0, np.hypot(*np.diff(Pp, axis=0).T)]
             z_dir = zp.copy()        # surface only: the uphill metric ignores stacking and ramps
             zp = zp - cp             # slope compensation: nozzle height only
+            z_surf = zp.copy()       # following the part; everything below only lifts from here
             # what is printed below this line right now (earlier sections and elements)
             if p.stack:
                 hp = surface.sample(HNP, g, Pp[:, 0], Pp[:, 1], mode="nearest")
@@ -776,10 +777,7 @@ def generate(job: Job, tp: Toolpaths, g: Grid, paths: list[dict], params: Params
             nk = min(3, max(1, len(zp) // 4))
             rise, slen = float(zp[-nk:].mean() - zp[:nk].mean()), float(dsp.sum())
             if p.ramp > 0:
-                for i in range(1, len(zp)):
-                    zp[i] = max(zp[i], zp[i - 1] - p.ramp * dsp[i])
-                for i in range(len(zp) - 2, -1, -1):
-                    zp[i] = max(zp[i], zp[i + 1] - p.ramp * dsp[i + 1])
+                zp = z_surf + _ramp_lift(zp - z_surf, dsp, p.ramp)
             if p.gap_flow:
                 ha = surface.sample(HA, g, Pp[:, 0], Pp[:, 1])
                 ha = np.maximum(np.where(np.isfinite(ha), ha, -np.inf), hp)
@@ -975,6 +973,21 @@ def _self_lift(P: np.ndarray, z: np.ndarray, ds: np.ndarray, w: float, bead: flo
         if v > z[bi]:
             z[bi] = v
     return z
+
+
+def _ramp_lift(lift: np.ndarray, ds: np.ndarray, ramp: float) -> np.ndarray:
+    """Ramps up to and down from a lift over the surface (crossing a printed bead).
+
+    Only the lift is ramped, never the surface itself: a hill steeper than the ramp
+    is followed as it is. (Ramping the absolute height turned the ramp into a slope
+    limit – on a 30° cone a slope line hung up to 2 mm in the air.)
+    """
+    out = np.maximum(np.asarray(lift, dtype=np.float64), 0.0)
+    for i in range(1, len(out)):
+        out[i] = max(out[i], out[i - 1] - ramp * ds[i])
+    for i in range(len(out) - 2, -1, -1):
+        out[i] = max(out[i], out[i + 1] - ramp * ds[i + 1])
+    return out
 
 
 def _curve_factor(P: np.ndarray, ds: np.ndarray, radius: float, fmin: float) -> np.ndarray:

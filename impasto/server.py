@@ -193,9 +193,14 @@ def job_grid(fid: str, plate: int = 1, sigma: float = 0.6, tip: float = 0.3):
         H = np.nan_to_num(g.H, nan=-1.0).astype(np.float32)
         ZN = np.nan_to_num(g.ZN, nan=-1.0).astype(np.float32)
         S = np.clip(np.rint(g.S * 2), 0, 180).astype(np.uint8)   # half degrees
-        head = json.dumps(g.meta()).encode()
+        HS = np.nan_to_num(g.Hs, nan=-1.0).astype(np.float32)    # smoothed height (contours)
+        FIL = (g.FIL if g.FIL is not None else np.full(g.H.shape, -1, np.int8)).astype(np.int8)
+        meta = dict(g.meta())
+        meta["fmt"] = 2                                          # grid buffer layout
+        head = json.dumps(meta).encode()
         pad = (-len(head)) % 4
-        buf = struct.pack("<I", len(head) + pad) + head + b" " * pad + H.tobytes() + ZN.tobytes() + S.tobytes()
+        buf = struct.pack("<I", len(head) + pad) + head + b" " * pad + H.tobytes() + ZN.tobytes() \
+            + S.tobytes() + HS.tobytes() + FIL.tobytes()
     return Response(buf, media_type="application/octet-stream")
 
 

@@ -49,17 +49,30 @@
         <button id="regionReset" class="btn small ghost" data-i18n="btn.reset">ZURÜCKSETZEN</button>
       </div>
       <div id="maskInfo" class="info"></div>
-      <div class="legend">
+      <div class="row">
+        <label data-i18n="label.view">Anzeige</label>
+        <select id="surfMode" data-i18n-tip="tip.view">
+          <option value="print" data-i18n="view.print">Druckfarben</option>
+          <option value="plain" data-i18n="view.plain">Neutral</option>
+          <option value="custom" data-i18n="view.custom">Eigene Farbe</option>
+        </select>
+        <input id="surfColor" class="colorin hidden" type="color" value="#e8e8e8" data-i18n-tip="tip.viewColor">
+      </div>
+      <div class="legend" id="legendMask">
         <span><i style="background:#e8a34a"></i><span data-i18n="legend.usable">nutzbar</span></span>
         <span><i style="background:#6b7a8c"></i><span data-i18n="legend.steep">zu steil / zu tief</span></span>
         <span><i style="background:#8a5a3a"></i><span data-i18n="legend.inset">Randabstand</span></span>
         <span><i style="background:#a03c3c"></i><span data-i18n="legend.excluded">ausgeschlossen</span></span>
+      </div>
+      <div class="legend hidden" id="legendPrint">
+        <span><i class="filsw"></i><span data-i18n="legend.print">Farbe der Oberfläche wie gedruckt · gedunkelt = nicht nutzbar</span></span>
       </div>
     </section>
     <section>
       <h3><span data-i18n="sec.elements">ELEMENTE</span><span class="info-i" tabindex="0" data-i18n-tip="tip.elements">i</span></h3>
       <div class="addgrid">
         <button class="btn small" data-add="outline" data-i18n-tip="tip.addOutline" data-i18n="btn.outline">KONTUR</button>
+        <button class="btn small" data-add="contours" data-i18n-tip="tip.addContours" data-i18n="btn.contours">HÖHENLINIEN</button>
         <button class="btn small" data-add="pattern" data-i18n-tip="tip.addPattern" data-i18n="btn.pattern">MUSTER</button>
         <button class="btn small" data-add="draw" data-i18n-tip="tip.addDraw" data-i18n="btn.draw">ZEICHNEN</button>
         <button class="btn small" data-add="image" data-i18n-tip="tip.addImage" data-i18n="btn.image">BILD</button>

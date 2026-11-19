@@ -3,6 +3,7 @@
 import { applyTf, simplify, chaikin, clipBy, hatch, circle, hexToRgb, rgbToHex, polyLength, DEG } from "./geom.js";
 import { marchingSquares, isoLevels } from "./grid.js";
 import { t } from "./i18n.js";
+import { cellsLocal, MAX_CELLS } from "./cells.js";
 
 export const TYPES = {
   outline: { label: "type.outline", tf: false,
@@ -11,7 +12,8 @@ export const TYPES = {
     defaults: { mode: "iso", dz: 0.5, startZ: 0, minLen: 2, maxLines: 400,
                 flowSpacing: 3, flowLen: 40, flowMinSlope: 2, flowStep: 0.3, margin: 0 } },
   pattern: { label: "type.pattern", tf: true,
-    defaults: { kind: "wave", spacing: 2.0, amp: 0.6, wavelength: 4.0, frame: "surface", w: 40, h: 20, border: false, margin: 0 } },
+    defaults: { kind: "wave", spacing: 2.0, amp: 0.6, wavelength: 4.0, frame: "surface", w: 40, h: 20, border: false, margin: 0,
+                jitter: 0.7, gap: 0.6, round: 0.8, fill: "none", fillSpacing: 0.45, fillAngle: 45, seed: 1, whole: false } },
   draw: { label: "type.draw", tf: true, defaults: { strokes: [], smooth: 2, margin: 0 } },
   image: { label: "type.image", tf: true,
     defaults: { src: null, name: "", w: 30, colors: 2, map: [], fill: true, contour: true, spacing: 0.45, angle: 45, smooth: 1, despeckle: true, margin: 0,
@@ -26,7 +28,7 @@ export const TYPES = {
 export const PATTERNS = {
   lines: "pattern.lines", grid: "pattern.grid", wave: "pattern.wave", zigzag: "pattern.zigzag",
   curls: "pattern.curls", circles: "pattern.circles", spiral: "pattern.spiral",
-  dots: "pattern.dots", diamonds: "pattern.diamonds",
+  dots: "pattern.dots", diamonds: "pattern.diamonds", cells: "pattern.cells",
 };
 
 let uid = Date.now() % 100000;
@@ -328,15 +330,28 @@ function buildPattern(el, surf) {
     R = Math.hypot(p.w, p.h) / 2 + p.spacing;
   }
   R = Math.min(R, 400);
-  let lines = patternLocal(p, R);
+  let info = "";
+  let lines;
+  if (p.kind === "cells") {
+    const res = cellsLocal(p, R);
+    lines = res.lines;
+    info = res.tooMany ? "!" + t("cells.tooMany", { max: MAX_CELLS }) : "";
+  } else {
+    lines = patternLocal(p, R);
+  }
   const step = 0.05 / s;
+  // clipping to the frame keeps the cell of every piece (colour unit)
+  const clipF = (inside) => (l) => clipBy(l, inside, step, !!l.closed).map(q => {
+    if (q.closed && q.length > 2) q.pop();              // clipBy repeats the first point
+    return Object.assign(q, { grp: l.grp });
+  });
   if (p.frame === "rect") {
     const hw = p.w / 2, hh = p.h / 2;
-    lines = lines.flatMap(l => clipBy(l, (x, y) => Math.abs(x) <= hw && Math.abs(y) <= hh, step));
+    lines = lines.flatMap(clipF((x, y) => Math.abs(x) <= hw && Math.abs(y) <= hh));
     if (p.border) lines.push(Object.assign([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh], [-hw, -hh]], { closed: true }));
   } else if (p.frame === "ellipse") {
     const a = p.w / 2, b = p.h / 2;
-    lines = lines.flatMap(l => clipBy(l, (x, y) => (x * x) / (a * a) + (y * y) / (b * b) <= 1, step));
+    lines = lines.flatMap(clipF((x, y) => (x * x) / (a * a) + (y * y) / (b * b) <= 1));
     if (p.border) {
       const e = [];
       for (let i = 0; i <= 160; i++) { const t = (i / 160) * 2 * Math.PI; e.push([a * Math.cos(t), b * Math.sin(t)]); }
@@ -344,7 +359,7 @@ function buildPattern(el, surf) {
     }
   }
   const box = p.frame === "surface" ? null : [-p.w / 2, -p.h / 2, p.w / 2, p.h / 2];
-  return { lines: lines.map(l => ({ slot: el.slot, pts: applyTf(l, tf), closed: !!l.closed })), box };
+  return { lines: lines.map(l => ({ slot: el.slot, pts: applyTf(l, tf), closed: !!l.closed, grp: l.grp })), box, info };
 }
 
 function patternLocal(p, R) {

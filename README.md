@@ -63,7 +63,7 @@ the one thing this tool is built for.
   from the smoothed height, nozzle radius, edge inset, minimum height and minimum area. Surfaces
   can be included and excluded with a click.
 - **Elements**: contour, height lines, patterns (lines, grid, waves, zigzag, curls, circles,
-  spiral, dots, diamonds), freehand drawing, images (PNG/JPG, k-means colour separation), text
+  spiral, dots, diamonds, cells), freehand drawing, images (PNG/JPG, k-means colour separation), text
   and SVG. Move, scale, rotate, recolour; crop and tile images and text.
 - **Height lines** – iso lines at a Z step, like a topographic map of the part: close together on
   steep places, wide apart on flat ones. The same element can instead (or as well) draw *slope
@@ -80,6 +80,24 @@ the one thing this tool is built for.
   <img src="docs/height-lines.png" alt="Height lines at a 0.4 mm Z step on a glasses front" width="49%">
   <img src="docs/slope-lines.png" alt="Slope lines along the height gradient on the same part" width="49%">
 </p>
+- **Cell pattern** – organic cells (jittered Voronoi on a hex lattice, `irregular` 0 % = honeycomb,
+  100 % = leather / pebbles) with a gap between the cells and rounded corners; a cell takes only the
+  rounding that fits, so small cells turn into round pebbles instead of vanishing. Fill: outline,
+  *rings* (the cell fills from the rim inwards as **one** continuous spiral, so a solid colour patch
+  costs one path and hardly any retracts) or hatch. *Whole cells only* drops cells the edge of the
+  surface would cut. Shape seed for a reproducible layout.
+- **Random colours, for every element** – scatter cells, strokes, objects, pieces or *sections*
+  over up to four AMS filaments with a seed: per cell (outline and fill keep one colour), per
+  stroke/line, per piece on the surface, or in sections of about *n* mm along every line (a single
+  continuous scribble turns colourful, neighbouring sections never share a colour). *Share* keeps
+  the rest in the element colour – one base colour with a few coloured cells. The printer still
+  changes colour as little as possible: all sections of a colour are printed in one batch, a colour
+  only comes back where an overlap with another element forces it.
+
+<p align="center">
+  <img src="docs/cells-random.png" alt="Cell pattern with ring fill, 40 % of the cells in random AMS colours" width="100%">
+</p>
+
 - **Order is the stack** – the element list is the stacking order. Where two elements overlap, the
   lower one is printed first; everything that does not overlap is free, so all elements of a colour
   are planned as one chain and a colour only comes back when an overlap needs it. Every line is
@@ -192,13 +210,16 @@ requirements and restarts the service there.
    drawing switches to **Print colours** (the part in the filaments it is printed with, AMS colours
    after *AMS Sync*), *Neutral* or one colour of your choice. Refine σ and the nozzle radius under
    *Analysis*.
-3. **Elements** – add height lines, contours, patterns, drawings, images, text or SVG. Everything
+3. **Elements** – add height lines, contours, patterns (incl. cells), drawings, images, text or SVG.
+   Every element can get *random colours* (unit, filaments, share, seed). Everything
    is clipped to the usable surface live; each element has its own margin and optional spline
    smoothing.
-4. **Generate** – the G-code block is built, the optional collision check runs, and the 3D view
+4. **Print settings** – only *offset* and *flow* sit up front; line width, speed, uphill and
+   everything else is under *Advanced*.
+5. **Generate** – the G-code block is built, the optional collision check runs, and the 3D view
    opens with playback. The status bar shows time, filament changes, purge, uphill share, cuts and
    collisions.
-5. **Export** as `.gcode.3mf` or `.gcode`, or **send** it to the printer (AMS only).
+6. **Export** as `.gcode.3mf` or `.gcode`, or **send** it to the printer (AMS only).
 
 Designs and named variants are stored per file and plate, so switching between ideas is one click.
 `Ctrl+Z` / `Ctrl+Y` undo and redo.

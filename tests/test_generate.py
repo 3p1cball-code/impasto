@@ -385,3 +385,18 @@ def test_slope_compensation_lowers_but_keeps_clear(setup):
     zs = surface.sample_max(g.ZN, g, eb[:, 5], eb[:, 6])
     ok = np.isfinite(zs)
     assert (eb[ok, 7] - zs[ok]).min() >= generate.SLOPE_MIN_CLEAR - 1e-3
+
+
+def test_random_colours_in_one_element_change_colour_once_per_filament(setup):
+    """Scattered colours (random colours) within one element: every filament is printed in
+    one batch – the printer does not go back and forth."""
+    job, tp, g = setup
+    rng = np.random.default_rng(3)
+    paths = []
+    for k, y in enumerate(np.arange(55.5, 61, 0.9)):
+        for x in np.arange(62, 118, 4.0):
+            paths.append({"slot": int(rng.integers(0, 4)), "order": 0, "pts": [[x, y], [x + 3, y]]})
+    res = generate.generate(job, tp, g, paths, generate.Params())
+    used = sorted({p["slot"] for p in paths})
+    assert res.stats["batches"] == len(used)
+    assert res.stats["toolchanges"] <= len(used)

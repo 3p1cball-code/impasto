@@ -6,17 +6,18 @@ import { TYPES, PATTERNS, newElement, build, setAsyncCallback, rasterOf, default
 import { polyLength, hexToRgb, smoothPolyline, simplify } from "./geom.js";
 import { initLang, getLang, setLang, onLang, applyStatic, t } from "./i18n.js";
 import { initTips } from "./tooltip.js";
+import { randomColours } from "./cells.js";
 
 const $ = (id) => document.getElementById(id);
 
 // key, label key, min, max, step, unit, scale(display factor), main?, tip key
 const PARAM_UI = [
   ["z_offset", "param.zOffset", -0.3, 0.6, 0.01, "mm", 1, true, "tip.param.z_offset"],
-  ["line_width", "param.lineWidth", 0.2, 1.0, 0.01, "mm", 1, true, "tip.param.line_width"],
+  ["line_width", "param.lineWidth", 0.2, 1.0, 0.01, "mm", 1, false, "tip.param.line_width"],
   ["flow", "param.flow", 0.3, 2.5, 0.01, "%", 100, true, "tip.param.flow"],
-  ["speed", "param.speed", 2, 60, 0.5, "mm/s", 1, true, "tip.param.speed"],
-  ["dir_min_rise", "param.dirMinRise", 0, 5, 0.01, "mm", 1, true, "tip.param.dir_min_rise"],
-  ["dir_travel_weight", "param.dirTravelWeight", 0, 40, 0.5, "×", 1, true, "tip.param.dir_travel_weight"],
+  ["speed", "param.speed", 2, 60, 0.5, "mm/s", 1, false, "tip.param.speed"],
+  ["dir_min_rise", "param.dirMinRise", 0, 5, 0.01, "mm", 1, false, "tip.param.dir_min_rise"],
+  ["dir_travel_weight", "param.dirTravelWeight", 0, 40, 0.5, "×", 1, false, "tip.param.dir_travel_weight"],
   ["hop", "param.hop", 0.2, 5, 0.1, "mm", 1, false, "tip.param.hop"],
   ["travel_speed", "param.travel", 20, 300, 5, "mm/s", 1, false, ""],
   ["retract", "param.retract", -1, 3, 0.05, "mm", 1, false, "tip.param.retract"],
@@ -149,25 +150,47 @@ function rebuildElement(el) {
   const mask = margin > 0 ? app.surf.maskMargin(margin) : app.surf.mask;
   const sIt = Math.round(+el.props.smoothIter || 0), sSt = +el.props.smoothStrength || 0;
   const sStep = Math.max(0.05, ctx.lineWidth * 0.5);
-  for (const l of b.lines) {
+  const whole = el.type === "pattern" && el.props.kind === "cells" && !!el.props.whole;
+  const broken = new Set();        // cells that the surface cuts (dropped with "whole cells only")
+  b.lines.forEach((l, src) => {
     let pts = l.pts;
     if (sIt > 0 && sSt > 0 && pts.length > 2) {
       pts = smoothPolyline(pts, sSt, sIt, l.closed, sStep);
       pts = simplify(pts, 0.004);
     }
     const pieces = app.surf.clipTo(mask, pts, l.closed);
-    for (const p of pieces) {
-      const L = polyLength(p);
-      if (L < 0.3) continue;
-      len += L;
-      clipped.push({ slot: l.slot, pts: p, closed: !!p.closed, layer: el.layer | 0 });
+    if (whole && l.grp != null) {
+      const full = polyLength(l.closed ? pts.concat([pts[0]]) : pts);
+      const got = pieces.length === 1 ? polyLength(pieces[0].closed ? pieces[0].concat([pieces[0][0]]) : pieces[0]) : 0;
+      if (pieces.length !== 1 || got < full - 0.05) { broken.add(l.grp); return; }
     }
-  }
-  b.clipped = clipped;
+    pieces.forEach((p, piece) => {
+      const L = polyLength(p);
+      if (L < 0.3) return;
+      clipped.push({ slot: l.slot, pts: p, closed: !!p.closed, layer: el.layer | 0, grp: l.grp, src, piece });
+    });
+  });
+  let kept = broken.size ? clipped.filter(c => c.grp == null || !broken.has(c.grp)) : clipped;
+  kept = randomColours(kept, randomOpts(el));
+  if (el.type === "pattern" && el.props.kind === "cells" && !b.info?.startsWith("!")) {
+    const n = new Set(kept.map(c => c.grp)).size;       // cells that really end up on the part
+    b.info = t("cells.info", { n }) + (broken.size ? t("cells.dropped", { n: broken.size }) : "");
+  } else if (b.info?.startsWith("!")) b.info = b.info.slice(1);
+  for (const c of kept) len += polyLength(c.pts);
+  b.clipped = kept;
   b.len = len;
   b.paths = null;
   app.built.set(el.id, b);
   return b;
+}
+
+// random colours of an element (props rnd*): which filaments, how many, which seed
+function randomOpts(el) {
+  const p = el.props;
+  if (!p.rndMode || p.rndMode === "off" || !app.meta) return null;
+  const all = app.meta.filaments.map(f => f.slot);
+  const slots = Array.isArray(p.rndSlots) && p.rndSlots.length ? p.rndSlots.filter(s => all.includes(s)) : all;
+  return { mode: p.rndMode, share: p.rndShare ?? 1, slots, seed: p.rndSeed ?? 1, dash: p.rndDash ?? 6 };
 }
 
 function rebuildAll() {
@@ -712,7 +735,9 @@ function renderList() {
     const b = app.built.get(el.id);
     const n = b ? b.clipped.length : 0;
     const i = app.elements.indexOf(el);
-    li.innerHTML = `<span class="sw" style="background:${app.slotColor(el.slot)}"></span><span class="nm">${esc(el.name)}</span><span class="ty">${n}</span>
+    const ro = randomOpts(el);
+    const swBg = ro ? `linear-gradient(90deg,${[el.slot, ...ro.slots].map(s => app.slotColor(s)).join(",")})` : app.slotColor(el.slot);
+    li.innerHTML = `<span class="sw" style="background:${swBg}"></span><span class="nm">${esc(el.name)}</span><span class="ty">${n}</span>
       <button class="ord" title="${esc(t("el.up"))}"${i >= app.elements.length - 1 ? " disabled" : ""}>▲</button><button class="ord" title="${esc(t("el.down"))}"${i <= 0 ? " disabled" : ""}>▼</button>
       <button title="${esc(t("el.visible"))}">${el.visible ? "◉" : "○"}</button><button title="${esc(t("el.duplicate"))}">⧉</button><button title="${esc(t("el.delete"))}">✕</button>`;
     li.onclick = (e) => { if (e.target.tagName !== "BUTTON") { app.select(el.id); } };
@@ -966,8 +991,22 @@ function renderProps() {
       marginControl(el, p, sl);
       break;
     case "pattern":
-      P.append(row(t("props.pattern"), select(Object.fromEntries(Object.entries(PATTERNS).map(([k, v]) => [k, t(v)])), p.kind, (v) => { setProp(el, "kind", v); renderProps(); })));
-      sl(t("props.spacing2"), "spacing", 0.3, 20, 0.05);
+      P.append(row(t("props.pattern"), select(Object.fromEntries(Object.entries(PATTERNS).map(([k, v]) => [k, t(v)])), p.kind, (v) => {
+        if (v === "cells" && (+p.spacing || 0) < 3) p.spacing = 5;      // a cell needs room for gap + rounding
+        setProp(el, "kind", v); renderProps();
+      })));
+      if (p.kind === "cells") {
+        sl(t("props.cellSize"), "spacing", 0.8, 30, 0.1, "mm", null, t("tip.cellSize"));
+        sl(t("props.jitter"), "jitter", 0, 1, 0.05, "", (v) => `${Math.round(v * 100)} %`, t("tip.jitter"));
+        sl(t("props.gap"), "gap", 0, 5, 0.05, "mm", null, t("tip.gap"));
+        sl(t("props.round"), "round", 0, 8, 0.05, "mm", null, t("tip.round"));
+        P.append(row(t("props.cellFill"), seg({ none: t("props.fillNone"), rings: t("props.fillRings"), hatch: t("props.fillHatch") },
+          p.fill || "none", (v) => { setProp(el, "fill", v); renderProps(); }), null, t("tip.cellFill")));
+        if (p.fill === "rings" || p.fill === "hatch") sl(t("props.fillSpacing"), "fillSpacing", 0.2, 3, 0.01);
+        if (p.fill === "hatch") sl(t("props.fillAngle"), "fillAngle", -90, 90, 1, "°", (v) => `${v}°`);
+        P.append(row(t("props.shapeSeed"), seedInput(p.seed ?? 1, (v) => setProp(el, "seed", v)), null, t("tip.shapeSeed")));
+        P.append(row("", check(p.whole, t("props.wholeCells"), (v) => setProp(el, "whole", v)), null, t("tip.wholeCells")));
+      } else sl(t("props.spacing2"), "spacing", 0.3, 20, 0.05);
       if (["wave", "zigzag", "curls", "dots"].includes(p.kind)) sl(p.kind === "dots" ? t("props.radius") : t("props.amp"), "amp", 0.1, 10, 0.05);
       if (["wave", "zigzag", "curls"].includes(p.kind)) sl(t("props.wavelength"), "wavelength", 0.3, 30, 0.1);
       P.append(row(t("props.frame"), seg({ surface: t("props.frameSurface"), rect: t("props.frameRect"), ellipse: t("props.frameEllipse") }, p.frame, (v) => { setProp(el, "frame", v); renderProps(); })));
@@ -1040,9 +1079,56 @@ function renderProps() {
       marginControl(el, p, sl);
       break;
   }
+  randomControls(el, p, sl);
   const b = app.built.get(el.id);
   if (b?.info) { const h = hint(b.info); h.classList.add("built-info"); P.append(h); }
   renderList();
+}
+
+// seed field with a dice button for a new one
+function seedInput(val, onchange) {
+  const w = document.createElement("div");
+  w.style.cssText = "display:flex;flex:1;gap:6px;align-items:center";
+  const i = num(val, 1, (v) => onchange(Math.max(1, Math.round(v))), 1);
+  const d = document.createElement("button"); d.className = "btn small"; d.textContent = "🎲"; d.title = t("props.newSeed");
+  d.onclick = () => { const v = 1 + Math.floor(Math.random() * 99999); i.value = v; onchange(v); };
+  w.append(i, d);
+  return w;
+}
+
+// random colours: every element can scatter its cells / strokes / pieces over up to 4 filaments
+function randomControls(el, p, sl) {
+  P.append(h4(t("props.rndH"), t("tip.rnd")));
+  const modes = { off: t("props.rndOff"), group: t(el.type === "pattern" && p.kind === "cells" ? "props.rndCell" : el.type === "draw" ? "props.rndStroke" : "props.rndObject"),
+    piece: t("props.rndPiece"), dash: t("props.rndDash") };
+  P.append(row(t("props.rndMode"), select(modes, p.rndMode || "off", (v) => {
+    setProp(el, "rndMode", v);
+    if (v !== "off" && p.rndShare == null) p.rndShare = 1;
+    if (v !== "off" && p.rndSeed == null) p.rndSeed = 1 + Math.floor(Math.random() * 99999);
+    renderProps();
+  }), null, t("tip.rndMode")));
+  if (!p.rndMode || p.rndMode === "off") return;
+  // multi-select of the filaments it draws from
+  const all = app.meta.filaments.map(f => f.slot);
+  const cur = Array.isArray(p.rndSlots) && p.rndSlots.length ? p.rndSlots.filter(s => all.includes(s)) : all;
+  const d = document.createElement("div"); d.className = "slotpick";
+  for (const f of app.meta.filaments) {
+    const b = document.createElement("button");
+    b.style.background = f.color; b.className = cur.includes(f.slot) ? "on" : "";
+    b.textContent = f.slot + 1; b.title = t("props.slotTitle", { n: f.slot + 1, type: f.type, name: f.name });
+    const c = hexToRgb(f.color); if (c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11 < 110) b.style.color = "#fff";
+    b.onclick = () => {
+      const next = cur.includes(f.slot) ? cur.filter(s => s !== f.slot) : [...cur, f.slot].sort((a, b) => a - b);
+      if (!next.length) return;
+      setProp(el, "rndSlots", next); renderProps();
+    };
+    d.appendChild(b);
+  }
+  P.append(row(t("props.rndSlots"), d, null, t("tip.rndSlots")));
+  P.append(row(t("props.rndShare"), slider(p.rndShare ?? 1, 0, 1, 0.01, (v, live) => setPropLive(el, "rndShare", v, live),
+    (v) => `${Math.round(v * 100)} %`), null, t("tip.rndShare")));
+  if (p.rndMode === "dash") sl(t("props.rndDashLen"), "rndDash", 0.5, 40, 0.5, "mm", null, t("tip.rndDashLen"));
+  P.append(row(t("props.rndSeed"), seedInput(p.rndSeed ?? 1, (v) => setProp(el, "rndSeed", v)), null, t("tip.rndSeed")));
 }
 
 function marginControl(el, p, sl) {

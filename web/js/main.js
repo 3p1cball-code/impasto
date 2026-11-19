@@ -689,10 +689,24 @@ function setTool(tool) {
   editor.render();
 }
 $("toolSelect").onclick = () => setTool("select");
-$("toolDraw").onclick = () => setTool("draw");
+// the pen draws on the selected drawing, or starts a new one; a second click puts it away
+function togglePen() {
+  if (editor.tool === "draw") { setTool("select"); return; }
+  const el = app.selected();
+  if (el && el.type === "draw") setTool("draw");
+  else addElement("draw");
+}
+$("toolDraw").onclick = togglePen;
 $("toolRegion").onclick = () => setTool(editor.tool === "region" ? "select" : "region");
 $("fitBtn").onclick = () => editor.fit();
 $("showLines").onchange = (e) => { app.showRealWidth = e.target.checked; editor.render(); };
+
+// leaving the pen: a tool that only means something while a drawing is selected would
+// otherwise keep painting into a brand-new element after every other click
+function penFor(el) {
+  if (editor.tool !== "draw") return;
+  if (!el || el.type !== "draw") setTool("select");
+}
 
 app.ensureDrawElement = (w) => {
   let el = app.selected();
@@ -720,7 +734,7 @@ function addElement(type, extra) {
   if (type === "pattern") el.props.frame = "surface";
   app.elements.push(el);
   app.selectedId = el.id;
-  if (type === "draw") setTool("draw");
+  if (type === "draw") setTool("draw"); else penFor(el);
   app.changed(el);
   renderProps();
   if (type === "image" || type === "svg") setTimeout(() => document.querySelector("#props input[type=file]")?.click(), 50);
@@ -767,6 +781,7 @@ function duplicate(el) {
   if (app.hasTf(c)) { c.tf.x += 3; c.tf.y -= 3; }
   app.elements.push(c);
   app.selectedId = c.id;
+  penFor(c);
   app.changed(c);
   renderProps();
 }
@@ -774,7 +789,7 @@ function removeEl(el) {
   app.pushUndo();
   app.elements = app.elements.filter(e => e !== el);
   app.built.delete(el.id);
-  if (app.selectedId === el.id) app.selectedId = null;
+  if (app.selectedId === el.id) { app.selectedId = null; penFor(null); }
   afterChange();
   renderProps();
 }
@@ -782,6 +797,7 @@ function removeEl(el) {
 app.select = (id) => {
   if (app.selectedId === id) return;
   app.selectedId = id;
+  penFor(app.selected());
   renderList(); renderProps(); editor.render();
 };
 
@@ -1024,6 +1040,17 @@ function renderProps() {
       const b2 = document.createElement("button"); b2.className = "btn small ghost"; b2.textContent = t("btn.strokeClear");
       b2.onclick = () => { app.pushUndo(); p.strokes = []; app.changed(el); };
       const r = document.createElement("div"); r.className = "row tools"; r.append(b1, b2); P.append(r);
+      if (editor.tool === "draw") {
+        const b3 = document.createElement("button"); b3.className = "btn small"; b3.textContent = t("btn.penDone");
+        b3.title = t("tip.penDone");
+        b3.onclick = () => setTool("select");
+        P.append(b3);
+      } else {
+        const b3 = document.createElement("button"); b3.className = "btn small"; b3.textContent = t("btn.penContinue");
+        b3.title = t("tip.penContinue");
+        b3.onclick = () => setTool("draw");
+        P.append(b3);
+      }
       marginControl(el, p, sl);
       break;
     }
@@ -1488,7 +1515,7 @@ window.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   switch (e.key) {
     case "v": case "V": setTool("select"); break;
-    case "d": case "D": setTool("draw"); break;
+    case "d": case "D": togglePen(); break;
     case "r": case "R": setTool(editor.tool === "region" ? "select" : "region"); break;
     case "f": case "F": editor.fit(); break;
     case "g": case "G": generate(); break;
